@@ -4,10 +4,12 @@ Each page starts with its {47} page mark. A paragraph or quotation broken by a p
 is joined back when it plainly goes on (no closing punctuation, next part in lower
 case) or when the page starts with "+ "; a word hyphenated across the break is
 rejoined. A note continued on the next page (same label again, no marker there) is
-joined to its first part. Notes whose numbering starts again are relabelled so every
-label is unique. HTML comments (<!-- -->) are left out.
+joined to its first part; so is the first of two notes with one label on a page when
+the page before had a note with that label. Notes whose numbering starts again are
+relabelled so every label is unique. HTML comments (<!-- -->) are left out.
 """
 import re
+from collections import Counter
 
 from ..markup import NOTE_DEF_RE, NOTE_REF_RE, page_mark, unique_label
 from .pages import load_pages
@@ -72,8 +74,11 @@ def compose(pages, labels):
         defs = [(m.group(1), m.group(2)) for k, t in blocks if k == 'n' for m in [NOTE_DEF_RE.match(t)]]
         refs = [r for k, t in blocks if k != 'n' for r in NOTE_REF_RE.findall(t)]
         rename, continued = {}, {}
+        count = Counter(lab for lab, _ in defs)
         for lab, text in defs:
-            if lab in running and lab not in refs:       # a note running on from the page before
+            # a note running on from the page before: no marker here, or the first of two
+            # notes with that label (the second is this page's own)
+            if lab in running and lab not in continued and (lab not in refs or count[lab] > 1):
                 notes[running[lab]] = join(notes[running[lab]], text, vocab)
                 continued[lab] = running[lab]
                 continue
@@ -88,6 +93,9 @@ def compose(pages, labels):
         for r in refs:
             if r not in rename:
                 problems.append(f'{name}: marker [^{r}] has no note on this page')
+        for lab, n in count.items():
+            if n - (lab in continued) > 1:
+                problems.append(f'{name}: note [^{lab}] is defined {n} times on this page')
         for lab, _ in defs:
             if lab in rename and lab not in refs:
                 problems.append(f'{name}: note [^{lab}] has no marker on this page')

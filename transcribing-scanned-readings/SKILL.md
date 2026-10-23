@@ -58,8 +58,10 @@ A paragraph on one line, _italics_ as printed, a note marker[^12] where it is pr
   `<!-- -->` comments, which build drops).
 - A paragraph or note running onto the next page: just stop, and start the next page with
   the rest. Build joins it (and a word hyphenated across the break). The rest of a note
-  goes under the same label: `[^12]: ...continued text`. If a paragraph goes on after a
-  full stop at the page foot, start the next page with `+ `.
+  goes under the same label: `[^12]: ...continued text`. If the page also has its own
+  note 12 (numbering restarts each page), write both as `[^12]`, the continuation first:
+  build joins the first to the note before and gives the second the marker. If a
+  paragraph goes on after a full stop at the page foot, start the next page with `+ `.
 - Note labels as printed (`[^4]`, `[^*]`); build makes repeats unique.
 - Tables as Markdown tables. Headings as `#`/`##`.
 - Every diacritic exactly as printed (Kṛṣṇa, ʿulamā), curly quotes and dashes as printed,
