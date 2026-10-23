@@ -1,9 +1,10 @@
 """Clean Markdown from a scanned reading, transcribed page by page by Claude.
 
     python -m scanocr.transcribe prepare <scan.pdf or images...> <workdir> [--resume ZIP]
-        writes pages/page_NNNN.png (the page), pages/page_NNNN_top.png and _bottom.png
-        (its halves, larger, for small print) and page_NNNN.md, a page file: pre-filled
-        from the PDF's old text layer (status: draft) or empty (status: todo)
+        writes pages/page_NNNN.png (the page's printed area) and page_NNNN.md, a page
+        file: pre-filled from the PDF's old text layer (status: draft) or empty (status: todo)
+    python -m scanocr.transcribe zoom <workdir> <N> top|bottom
+        pages/page_NNNN_top.png or _bottom.png: half the page, larger, for small print
     python -m scanocr.transcribe status <workdir>
     python -m scanocr.transcribe build <workdir> <out.md> [--partial]
         joins the done pages into one .md and lists anything to fix
@@ -26,6 +27,6 @@ a hyphen and notes are joined across pages by build; "+ " at the start of a page
 forces a join.
 """
 from .build import build
-from .pages import pack, prepare, status
+from .pages import pack, prepare, status, zoom
 
-__all__ = ['build', 'pack', 'prepare', 'status']
+__all__ = ['build', 'pack', 'prepare', 'status', 'zoom']

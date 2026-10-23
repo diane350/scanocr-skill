@@ -15,8 +15,7 @@ STATUS_RE = re.compile(r'^\s*#?\s*status:\s*(\S+)', re.I)
 PAGE_RE = re.compile(r'^\s*page:\s*(.*?)\s*$', re.I)
 STATUSES = ('todo', 'draft', 'done')
 DPI = 200
-DRAFT_NOTE = ("<!-- Pre-filled from the PDF's old text: correct it against the scan, add what is\n"
-              "     missing (italics, note markers, quotations), then set status: done -->\n")
+ZOOM_DPI = 300
 
 
 @dataclass
@@ -59,8 +58,68 @@ def write_page(path, status, number, body):
 
 # -- prepare -------------------------------------------------------------------
 
+def _text_lines(pdf_page):
+    """Boxes of the page's text lines: (level ones, sideways ones such as a "Downloaded
+    by..." watermark)."""
+    level, sideways = [], []
+    for b in pdf_page.get_text('dict')['blocks']:
+        for l in b.get('lines', []):
+            if ''.join(s['text'] for s in l['spans']).strip():
+                (level if abs(l['dir'][1]) < 0.1 else sideways).append(pymupdf.Rect(l['bbox']))
+    return level, sideways
+
+
+def _printed_area(small, scale, ignore=()):
+    """The box (in units of ``small`` / ``scale``) holding the page's ink, with a margin:
+    blank margins cost as much to look at as print. ``small``: the page at low resolution;
+    ``ignore``: boxes (same units) whose ink doesn't count."""
+    w, h, n, data = small.width, small.height, small.n, small.samples
+    skip = [pymupdf.IRect(r.x0 * scale, r.y0 * scale, r.x1 * scale + 1, r.y1 * scale + 1) for r in ignore]
+    rows, cols = [0] * h, [0] * w
+    for y in range(h):
+        for x in range(w):
+            i = (y * w + x) * n
+            if min(data[i:i + min(n, 3)]) < 200 and not any(x in range(r.x0, r.x1) and y in range(r.y0, r.y1)
+                                                          for r in skip):
+                rows[y] += 1
+                cols[x] += 1
+    ys = [y for y, c in enumerate(rows) if c > 1]
+    xs = [x for x, c in enumerate(cols) if c > 1]
+    if not ys or not xs:
+        return pymupdf.Rect(0, 0, w / scale, h / scale)
+    pad = 0.02 * w
+    return pymupdf.Rect(max(0, xs[0] - pad), max(0, ys[0] - pad),
+                        min(w, xs[-1] + 1 + pad), min(h, ys[-1] + 1 + pad)) / scale
+
+
+def _pdf_area(pdf_page):
+    """The printed area: the ink, and every level line of the old text layer (faint small
+    print can be lost at low resolution)."""
+    small = pdf_page.get_pixmap(dpi=36)
+    level, sideways = _text_lines(pdf_page)
+    area = _printed_area(small, small.width / pdf_page.rect.width, sideways)
+    for r in level:
+        area |= r + (-6, -6, 6, 6)
+    return (area + (pdf_page.rect.x0, pdf_page.rect.y0) * 2) & pdf_page.rect
+
+
+def _image_area(pix):
+    k = max(0, (max(pix.width, pix.height) // 300).bit_length() - 1)      # shrink by 2**k to ~300 px
+    small = pymupdf.Pixmap(pix)
+    if k:
+        small.shrink(k)
+    return _printed_area(small, small.width / pix.width).round() & pix.irect
+
+
+def _clip(pix, box):
+    part = pymupdf.Pixmap(pix.colorspace, box, pix.alpha)
+    part.copy(pix, box)
+    return part
+
+
 def _render(sources, pages_dir):
-    """(page image, its PDF page or None) for each page of the sources, in order."""
+    """(page image, its PDF page or None) for each page of the sources, in order.
+    The image shows only the printed area of the page."""
     out = []
     for src in sources:
         try:
@@ -70,23 +129,44 @@ def _render(sources, pages_dir):
         for pg in doc:
             path = os.path.join(pages_dir, f'page_{len(out) + 1:04d}.png')
             if doc.is_pdf:
-                pg.get_pixmap(dpi=DPI).save(path)
+                pg.get_pixmap(dpi=DPI, clip=_pdf_area(pg)).save(path)
                 out.append((path, pg))
             else:                                   # an image: its own resolution
-                pymupdf.Pixmap(src).save(path)
+                pix = pymupdf.Pixmap(src)
+                _clip(pix, _image_area(pix)).save(path)
                 out.append((path, None))
     return out
 
 
-def _halves(path):
-    """The page's top and bottom halves (overlapping), for reading small print."""
-    pix = pymupdf.Pixmap(path)
-    w, h = pix.width, pix.height
-    for name, (y0, y1) in (('top', (0, int(h * 0.55))), ('bottom', (int(h * 0.45), h))):
-        clip = pymupdf.IRect(0, y0, w, y1)
-        part = pymupdf.Pixmap(pix.colorspace, clip, pix.alpha)
-        part.copy(pix, clip)
-        part.save(path.replace('.png', f'_{name}.png'))
+def _source_page(workdir, i):
+    """The ``i``th page (from 1) of the job's sources: (PDF page, None) or (None, image path)."""
+    with open(os.path.join(workdir, 'job.json')) as f:
+        sources = json.load(f)['sources']
+    for src in sources:
+        doc = pymupdf.open(src)
+        if i <= len(doc):
+            return (doc[i - 1], None) if doc.is_pdf else (None, src)
+        i -= len(doc)
+    raise SystemExit(f'There is no page {i}.')
+
+
+def zoom(workdir, i, part):
+    """A larger image of the top or bottom half of page ``i``'s printed area, for small print
+    (notes, accents). Made only when asked for, as it costs as much to look at as the page."""
+    pdf_page, image = _source_page(workdir, i)
+    if pdf_page is not None:
+        box = _pdf_area(pdf_page)
+        y = box.y0 + box.height * (0.45 if part == 'bottom' else 0)
+        pix = pdf_page.get_pixmap(dpi=ZOOM_DPI, clip=pymupdf.Rect(box.x0, y, box.x1, y + box.height * 0.55))
+    else:                                           # an image: nothing finer than itself
+        whole = pymupdf.Pixmap(image)
+        box = _image_area(whole)
+        y = box.y0 + int(box.height * (0.45 if part == 'bottom' else 0))
+        pix = _clip(whole, pymupdf.IRect(box.x0, y, box.x1, y + int(box.height * 0.55)) & box)
+    path = os.path.join(workdir, 'pages', f'page_{i:04d}_{part}.png')
+    pix.save(path)
+    print(path)
+    return path
 
 
 def _line_text(spans, body_size, note):
@@ -183,7 +263,7 @@ def draft(pdf_page):
     parts = [f'<!-- {e} -->' for e in head] + body_paras + notes + [f'<!-- {e} -->' for e in foot]
     if len(set(numbers)) > 1:
         parts.insert(0, f'<!-- page numbers printed: {", ".join(dict.fromkeys(numbers))} -->')
-    return (numbers[-1] if len(set(numbers)) == 1 else ''), DRAFT_NOTE + '\n' + '\n\n'.join(parts)
+    return (numbers[-1] if len(set(numbers)) == 1 else ''), '\n\n'.join(parts)
 
 
 def prepare(sources, workdir, resume=None):
@@ -200,7 +280,6 @@ def prepare(sources, workdir, resume=None):
     rendered = _render([os.path.abspath(s) for s in sources], pages_dir)
     counts = {s: 0 for s in STATUSES}
     for i, (image, pdf_page) in enumerate(rendered, 1):
-        _halves(image)
         path = page_path(workdir, i)
         name = os.path.basename(path)
         if name in carried and not os.path.exists(path):

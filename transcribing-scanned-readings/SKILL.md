@@ -18,15 +18,17 @@ a chat `/mnt/user-data/outputs`; in the repository `local/out/`).
 
 1. `TOOL prepare <scan.pdf or page images> WORK` (add `--resume <progress.zip>` if the user
    gives one).
-2. **Each page, in order**: open `WORK/pages/page_NNNN.png`, and `_top.png` / `_bottom.png`
-   for small print. Edit `WORK/page_NNNN.md` until it matches the scan, set `status: done`,
-   save, go on. A `draft` is pre-filled from the PDF's old text: correct it, don't retype it.
-   A `todo` page is empty: type it.
+2. **Each page, in order**: open `WORK/pages/page_NNNN.png` and `WORK/page_NNNN.md`
+   together, then write the whole corrected page file at once, with `status: done`, and go
+   on. A `draft` is pre-filled from the PDF's old text: correct it against the scan. A
+   `todo` page is empty: type it. Only if small print (notes, accents) can't be read for
+   sure: `TOOL zoom WORK N bottom` (or `top`) makes a larger image of that half.
 3. If the pages print **two page numbers** (a reprint inside another book: 146 and 46),
    ask the user once which they cite, and put that one in `page:`.
 4. Long readings: `TOOL status WORK` shows what's left. About every 10 pages,
    `TOOL pack WORK OUT/<name>-progress.zip` and give it to the user, so a new chat can carry
-   on. With helper agents and 30+ pages, give each a page range and this skill.
+   on. Every image opened stays in the conversation, so with helper agents (Claude Code)
+   give each about 10 pages and this skill.
 5. `TOOL build WORK OUT/<name>.md` (`--partial` for what's done so far). Fix what it
    lists, build again, give the user the `.md`.
 

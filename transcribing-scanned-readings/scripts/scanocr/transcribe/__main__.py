@@ -3,7 +3,7 @@ import sys
 
 from . import __doc__ as DOC
 from .build import build
-from .pages import pack, prepare, status
+from .pages import pack, prepare, status, zoom
 
 
 def main(argv=None):
@@ -23,11 +23,17 @@ def main(argv=None):
     k = sub.add_parser('pack', help='save the page files in one small file for a later session')
     k.add_argument('workdir')
     k.add_argument('zip')
+    z = sub.add_parser('zoom', help='a larger image of half a page, for small print')
+    z.add_argument('workdir')
+    z.add_argument('page', type=int, help='the page file number (NNNN in page_NNNN.md)')
+    z.add_argument('part', choices=('top', 'bottom'))
     a = ap.parse_args(argv)
     if a.cmd == 'prepare':
         prepare(a.src, a.workdir, a.resume)
     elif a.cmd == 'status':
         status(a.workdir)
+    elif a.cmd == 'zoom':
+        zoom(a.workdir, a.page, a.part)
     elif a.cmd == 'pack':
         pack(a.workdir, a.zip)
     elif not build(a.workdir, a.out, a.partial):
