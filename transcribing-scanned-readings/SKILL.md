@@ -19,10 +19,17 @@ a chat `/mnt/user-data/outputs`; in the repository `local/out/`).
 1. `TOOL prepare <scan.pdf or page images> WORK` (add `--resume <progress.zip>` if the user
    gives one).
 2. **Each page, in order**: open `WORK/pages/page_NNNN.png` and `WORK/page_NNNN.md`
-   together, then write the whole corrected page file at once, with `status: done`, and go
-   on. A `draft` is pre-filled from the PDF's old text: correct it against the scan. A
-   `todo` page is empty: type it. Only if small print (notes, accents) can't be read for
-   sure: `TOOL zoom WORK N bottom` (or `top`) makes a larger image of that half.
+   together, then go on to the next.
+   - A `draft` is pre-filled from the PDF's old text. Don't rewrite it: send only the
+     corrections, which also marks it done:
+     `TOOL fix WORK N <<'EOF'` then one `wrong text ==> right text` per line, then `EOF`.
+     Give enough words that each wrong text occurs once on the page; `\n` is a line break
+     (`masses.3 ==> masses.[^3]`, `ended. Then ==> ended.\n\nThen`). No lines: it was right.
+   - A draft that starts `<!-- typed text` is the PDF's own type, not a scan: proofread it
+     without opening the image (open it only for a table, or if something looks wrong).
+   - A `todo` page is empty: type it, writing the whole page file with `status: done`.
+   - Only if small print (notes, accents) can't be read for sure: `TOOL zoom WORK N bottom`
+     (or `top`) makes a larger image of that half.
 3. If the pages print **two page numbers** (a reprint inside another book: 146 and 46),
    ask the user once which they cite, and put that one in `page:`.
 4. Long readings: `TOOL status WORK` shows what's left. About every 10 pages,

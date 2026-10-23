@@ -21,6 +21,8 @@ scan). Check here before changing the code: most "simpler" approaches were tried
 | Two page numbers on a page (146 and 46) | A reprint inside an anthology | Draft lists both in a comment; the skill asks the user once |
 | 100+ page books, sessions expire | Cloud containers are temporary | Drafts pre-filled from the old text; `status`; `pack` / `prepare --resume`; `build --partial` |
 | About 7,000 image tokens a page (Guha) | Whole page at 200 dpi plus its two halves, always opened; the halves had the same pixels, as current models don't shrink images this size | Page image cropped to the printed area (ink and text-layer lines, not the sideways watermark): about 1,900; halves only on request (`zoom`, 300 dpi) (`pages._pdf_area`) |
+| Output costly: every draft page written out in full, for a few fixes | A page file was rewritten whole | `fix` takes only the corrections (each must match once, or nothing changes) and marks the page done (`pages.fix`) |
+| Images opened for PDFs that are not scans | The tool treated every text layer as an old OCR one | Visible text and no full-page picture: the draft says it is typed text, proofread without the image (`pages.typed_text`) |
 | Long readings costly even so | Each image stays in the conversation, so each later step pays for it again | One step to open the image and the page file, one write per page; helper agents take about 10 pages each (SKILL.md) |
 
 ## Running in a claude.ai chat

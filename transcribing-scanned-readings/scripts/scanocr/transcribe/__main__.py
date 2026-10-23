@@ -3,7 +3,7 @@ import sys
 
 from . import __doc__ as DOC
 from .build import build
-from .pages import pack, prepare, status, zoom
+from .pages import fix, pack, prepare, status, zoom
 
 
 def main(argv=None):
@@ -20,6 +20,10 @@ def main(argv=None):
     z.add_argument('page', type=int, help='the page file number (NNNN in page_NNNN.md)')
     z.add_argument('part', choices=('top', 'bottom'))
     z.set_defaults(run=lambda a: zoom(a.workdir, a.page, a.part))
+    f = sub.add_parser('fix', help='correct a draft page and mark it done (corrections on stdin)')
+    f.add_argument('workdir')
+    f.add_argument('page', type=int, help='the page file number (NNNN in page_NNNN.md)')
+    f.set_defaults(run=lambda a: fix(a.workdir, a.page, sys.stdin.read()))
     s = sub.add_parser('status', help='pages done, drafts to proofread, pages not started')
     s.add_argument('workdir')
     s.set_defaults(run=lambda a: status(a.workdir))

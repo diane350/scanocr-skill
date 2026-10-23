@@ -5,6 +5,8 @@
         file: pre-filled from the PDF's old text layer (status: draft) or empty (status: todo)
     python -m scanocr.transcribe zoom <workdir> <N> top|bottom
         pages/page_NNNN_top.png or _bottom.png: half the page, larger, for small print
+    python -m scanocr.transcribe fix <workdir> <N>  < corrections
+        a draft corrected and marked done: one 'wrong text ==> right text' a line
     python -m scanocr.transcribe status <workdir>
     python -m scanocr.transcribe build <workdir> <out.md> [--partial]
         joins the done pages into one .md and lists anything to fix
@@ -27,6 +29,6 @@ a hyphen and notes are joined across pages by build; "+ " at the start of a page
 forces a join.
 """
 from .build import build
-from .pages import pack, prepare, status, zoom
+from .pages import fix, pack, prepare, status, zoom
 
-__all__ = ['build', 'pack', 'prepare', 'status', 'zoom']
+__all__ = ['build', 'fix', 'pack', 'prepare', 'status', 'zoom']

@@ -18,6 +18,8 @@ STATUSES = ('todo', 'draft', 'done')
 DPI = 200
 ZOOM_DPI = 300
 BLANK_DPI, BLANK_PX = 50, 400           # a blank page: enough to see that it is blank
+TYPED = '<!-- typed text: proofread without opening the image -->'
+FIX_SEP = ' ==> '
 
 
 @dataclass
@@ -238,6 +240,18 @@ def zoom(workdir, i, part):
     return path
 
 
+def typed_text(pdf_page):
+    """Whether the page's text layer is its own type (a PDF made from a document), not a
+    scan's hidden OCR text: the text is visible, and no picture covers the page."""
+    counts = [(t['type'], len(t['chars'])) for t in pdf_page.get_texttrace()]
+    total = sum(n for _, n in counts)
+    visible = sum(n for kind, n in counts if kind != 3)        # 3: invisible, as OCR text is
+    page = abs(pdf_page.rect)
+    covered = any(abs(pymupdf.Rect(im['bbox']) & pdf_page.rect) > 0.5 * page
+                  for im in pdf_page.get_image_info())
+    return total > 0 and visible > 0.9 * total and not covered
+
+
 def _line_text(spans, note):
     """A line's text with _italics_ and note markers ([^12]) from the span styles."""
     out = []
@@ -375,7 +389,7 @@ def prepare(sources, workdir, resume=None):
         if not os.path.exists(path):
             got = draft(pdf_page) if pdf_page is not None else None
             if got:
-                write_page(path, 'draft', got[0], got[1])
+                write_page(path, 'draft', got[0], f'{TYPED}\n\n{got[1]}' if typed_text(pdf_page) else got[1])
             else:
                 write_page(path, 'todo', '', '')
         with open(path, encoding='utf-8') as f:
@@ -420,10 +434,43 @@ def status(workdir):
         st.setdefault(page.status, []).append(i)
     n = sum(len(v) for v in st.values())
     print(f'Done: {len(st["done"])} of {n} pages')
+    typed = [i for i, page in enumerate(load_pages(workdir), 1) if page.status == 'draft' and TYPED in page.body]
     for key, label in (('draft', 'Drafts to proofread'), ('todo', 'Not started')):
         if st[key]:
             print(f'{label}: pages {_ranges(st[key])}')
+    if typed:
+        print(f'Of the drafts, typed text (no need to open the image): pages {_ranges(typed)}')
     return st
+
+
+def fix(workdir, i, corrections):
+    """Page ``i``'s draft corrected and marked done, without writing the whole page out.
+    ``corrections``: lines 'wrong text ==> right text' (\\n for a line break; none if the
+    draft is right). Each wrong text must occur exactly once; if any doesn't, nothing is
+    changed."""
+    path = page_path(workdir, i)
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
+    errors, n = [], 0
+    for line in corrections.splitlines():
+        if not line.strip():
+            continue
+        if FIX_SEP not in line:
+            errors.append(f'no "{FIX_SEP.strip()}" in: {line}')
+            continue
+        old, new = (part.replace('\\n', '\n') for part in line.split(FIX_SEP, 1))
+        found = text.count(old)
+        if found != 1:
+            errors.append(f'{"not found" if not found else f"found {found} times"}: {old}')
+            continue
+        text = text.replace(old, new)
+        n += 1
+    if errors:
+        raise SystemExit(f'{os.path.basename(path)} not changed. Use more words so each occurs once:\n  '
+                         + '\n  '.join(errors))
+    page = parse_page(text)
+    write_page(path, 'done', page.number, page.body.replace(TYPED, '').strip())
+    print(f'{os.path.basename(path)}: {n} fixes, done')
 
 
 def pack(workdir, zip_path):
