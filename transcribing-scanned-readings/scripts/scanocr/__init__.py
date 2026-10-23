@@ -1,2 +1,2 @@
-"""OCR for scanned readings: clean text + searchable PDF."""
-__version__ = '0.1.0'
+"""Scanned readings to clean Markdown (transcribe), and a journal-style typesetter (typeset)."""
+__version__ = '0.2.0'

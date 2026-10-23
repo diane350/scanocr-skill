@@ -1,79 +1,67 @@
 ---
 name: transcribing-scanned-readings
-description: Use when a scanned reading (JSTOR/library PDF, book scan, photocopy) needs quotable text or a searchable PDF for Zotero, with page numbers and linked footnotes, without OCR software.
+description: Use when a scanned reading (JSTOR/library PDF, book scan, photocopy) needs clean, quotable Markdown with printed page numbers and footnotes, without OCR software.
 ---
 
 # Transcribing scanned readings
 
-## Overview
-
-Claude reads each page; the bundled tool checks the transcription and builds a **clean
-`.md`** (flowing paragraphs, `{47}` page marks, Markdown footnotes, tables, italics) and a
-**searchable PDF** (the scan unchanged; invisible text line by line, running heads kept out
-of the copyable text, printed page numbers as page labels so Zotero cites "p. 47", footnote
-markers clickable both ways). Why it works this way: `references/problems-and-fixes.md`.
+Your one job: a faithful, clean `.md` of the reading. A small tool does the rest (page
+images, a draft from the PDF's old text, joining pages, checking notes).
 
 **The tool**: `python3 ${CLAUDE_SKILL_DIR}/scripts/scanocr_cli.py <command>` (in a chat,
-`scripts/scanocr_cli.py` in this skill's folder). Below, `TOOL` means that. It installs
-the PDF libraries it needs on first run.
-
-**Folders**: work in a scratch folder (`WORK`, e.g. `/tmp/<name>`; in the scanocr
-repository use `local/work/<name>`, which git ignores: scans are copyrighted). Put results
-where the user can download them (`OUT`: in a chat `/mnt/user-data/outputs` if it exists;
-in the repository `local/out/<name>`), then give them to the user.
+`scripts/scanocr_cli.py` in this skill's folder); below, `TOOL`. It installs PyMuPDF on
+first run. Work in a scratch folder `WORK` (in the scanocr repository: `local/work/<name>`,
+git-ignored; scans are copyrighted). Results go where the user can download them (`OUT`: in
+a chat `/mnt/user-data/outputs`; in the repository `local/out/`).
 
 ## Steps
 
-1. **Ask once**, only if the scan shows two page numbers (a reprint inside another book):
-   which pagination the user cites.
-2. **Prepare**: `TOOL prepare <scan.pdf> WORK`, adding `--resume <progress.zip>` if the user
-   gives one. One PDF or image; combine images first:
-   `doc.insert_pdf(fitz.open('pdf', fitz.open(img).convert_to_pdf()))` per image.
-3. **Each page, in order**: look at `WORK/sheets/page_NNNN.png` (numbered blocks; open the
-   image); for small print `WORK/crops/page_NNNN_bKK.png`. A **draft** (`# status: draft`) is
-   pre-filled from the PDF's old text: correct every line against the scan by editing, not
-   retyping. A **todo** page: type it. Then set `# status: done` and save before the next page.
-4. **Long readings**: `TOOL status WORK` shows what's left. About every 10 pages,
-   `TOOL pack WORK OUT/<name>-progress.zip` and give it to the user: a session or chat can
-   end, and they continue in a new one by sharing the zip and the scan. Offer
-   `TOOL build WORK OUT --partial` for chapters done so far. Where helper agents are
-   available (Claude Code) and there are 30+ pages, give each helper a page range, the
-   `WORK` folder and "follow the transcribing-scanned-readings skill".
-5. **Build**: `TOOL build WORK OUT`. Fix what it lists. "Line breaks to check": make the
-   block's lines match the scan. "Footnotes to check": a marker or note is missing or mistyped.
-6. **Check and deliver**: `pdftotext -f 1 -l 2 <pdf> -` (if installed) reads like the
-   pages; give the user the `.md` and PDF (and the latest progress zip). Tell them to check
-   quotes against the scan.
+1. `TOOL prepare <scan.pdf or page images> WORK` (add `--resume <progress.zip>` if the user
+   gives one).
+2. **Each page, in order**: open `WORK/pages/page_NNNN.png`, and `_top.png` / `_bottom.png`
+   for small print. Edit `WORK/page_NNNN.md` until it matches the scan, set `status: done`,
+   save, go on. A `draft` is pre-filled from the PDF's old text: correct it, don't retype it.
+   A `todo` page is empty: type it.
+3. If the pages print **two page numbers** (a reprint inside another book: 146 and 46),
+   ask the user once which they cite, and put that one in `page:`.
+4. Long readings: `TOOL status WORK` shows what's left. About every 10 pages,
+   `TOOL pack WORK OUT/<name>-progress.zip` and give it to the user, so a new chat can carry
+   on. With helper agents and 30+ pages, give each a page range and this skill.
+5. `TOOL build WORK OUT/<name>.md` (`--partial` for what's done so far). Fix what it
+   lists, build again, give the user the `.md`.
 
-## Transcription file
+## A page file
 
-| Write | Means |
-|---|---|
-| `# status: todo / draft / done` | first line; only `done` pages are built |
-| `page: 47` | the printed page number; blank if none shows (it's counted on) |
-| `=== 3 ===` | body text: paragraphs, quotations, author line |
-| `=== 1 header ===`, `=== 9 footer ===` | running heads, page numbers, footer lines |
-| `=== 8 footnote ===` | notes: each starts with its marker (`¹`, `*`, `†`), blank line between notes; a note continued from the page before starts without a marker |
-| `=== 4-6 table ===` | blocks 4 to 6 hold one table: a Markdown table, one row per printed row |
-| `=== 4 ===` then `=== 4 footnote ===` | block 4 holds two kinds (no gap on the page): split it |
-| `=== 7 skip ===` | no text: picture, stamp, sideways watermark |
-| one line per printed line | same breaks; keep end-of-line hyphens (`oppres-` / `sors`) |
-| `# Title`, `## II` | headings |
-| `_word_`, `¹ ²`, — ‘ ’ “ ” | italics; footnote markers in the text; as printed |
-| ā ṇ ś ḥ ṛ r̥ ṃ ʿ ʾ é ü ł … | every diacritic exactly as printed, never simplified (Kṛṣṇa, not Krishna) |
-| `+ ` at the start of a page's first line | the paragraph continues across the break though the page before ended with a full stop |
+```
+status: done
+page: 47
 
-Cover every block once, in order. Keep `(sic)`, misspellings and old spellings as printed.
+A paragraph on one line, _italics_ as printed, a note marker[^12] where it is printed.
 
-## Common mistakes
+> A displayed (indented) quotation.
 
-- Reflowing a paragraph into one line: placement falls back to guessing line breaks.
-- Dropping or simplifying diacritics: searches and quotes then miss the word.
-- Leaving footnotes inside a body block: split the block, or they aren't linked.
-- Marking a draft `done` without checking every line: old text layers misread. Typical
-  misreads: ’ as `*` (`down*`), & as `8c` or `St`, footnote markers as plain or wrong
-  digits, `rn` as `m` (`subaltemity`), `rt` as `n` (`imponant`), `die` for `the`, straight
-  quotes for curly ones, words run together, `S` for `8` in dates; italics are never there; in
-  footnotes, notes run together without the blank line between them.
-- Typing a running head as text: it lands in the quote stream; mark it `header`.
-- Losing the sentence that runs onto the next page: it's joined at build time; type it as is.
+## II
+
+[^12]: The note's text, on one line.
+```
+
+- Leave out running heads, page numbers and watermarks (the draft puts them in
+  `<!-- -->` comments, which build drops).
+- A paragraph or note running onto the next page: just stop, and start the next page with
+  the rest. Build joins it (and a word hyphenated across the break). The rest of a note
+  goes under the same label: `[^12]: ...continued text`. If a paragraph goes on after a
+  full stop at the page foot, start the next page with `+ `.
+- Note labels as printed (`[^4]`, `[^*]`); build makes repeats unique.
+- Tables as Markdown tables. Headings as `#`/`##`.
+- Every diacritic exactly as printed (Kṛṣṇa, ʿulamā), curly quotes and dashes as printed,
+  `(sic)`, misspellings and old spellings kept.
+
+## What the draft gets wrong (check every line)
+
+- Note markers missing or wrong (`masses.3` plain, a `[^1]` that should be `[^3]`).
+- Paragraph breaks: indents are guessed; section numbers (`II`) and headings come out as
+  text; quotations aren't marked `>`.
+- Italics are partial or wrong; small capitals are lost.
+- Misreads: `rn`→`m` (subaltemity), `rt`→`n` (imponant), `die` for `the`, `S` for `8` and
+  `l` for `1` in numbers, `of1799` run together, `’` as `*`, `&` as `8c`/`St`, straight quotes.
+- Notes split or run together; a note's continuation at the top of a page.

@@ -1,32 +1,31 @@
-"""Clean text and a searchable PDF from pages transcribed by Claude instead of an OCR model.
+"""Clean Markdown from a scanned reading, transcribed page by page by Claude.
 
-    python -m scanocr.transcribe prepare <scan.pdf or page image> <workdir> [--resume ZIP]
-        renders the pages, finds the text blocks, and writes for each page:
-          sheets/page_NNNN.png    the page with its blocks boxed and numbered (to read)
-          crops/page_NNNN_bKK.png each block at full size (for small print)
-          page_NNNN.txt           the transcription: pre-filled from the PDF's old text
-                                  (status draft) or to type (status todo); kept if it exists
-    python -m scanocr.transcribe status <workdir>      pages done, drafts, not started
-    python -m scanocr.transcribe build <workdir> <outdir> [--partial]
-        checks every transcription, then writes <outdir>/<name>.md and <name>_searchable.pdf
+    python -m scanocr.transcribe prepare <scan.pdf or images...> <workdir> [--resume ZIP]
+        writes pages/page_NNNN.png (the page), pages/page_NNNN_top.png and _bottom.png
+        (its halves, larger, for small print) and page_NNNN.md, a page file: pre-filled
+        from the PDF's old text layer (status: draft) or empty (status: todo)
+    python -m scanocr.transcribe status <workdir>
+    python -m scanocr.transcribe build <workdir> <out.md> [--partial]
+        joins the done pages into one .md and lists anything to fix
     python -m scanocr.transcribe pack <workdir> <progress.zip>
-        the transcriptions in one file, to carry on in a later session (prepare --resume)
 
-Transcription file (see transcript.py):
-    # status: done           todo / draft / done; only done pages are built
-    page: 47                 printed page number, blank if none shows
-    === 3 ===                body text (headings, quotations too)
-    === 1 header ===         running head, page number (also: footer): kept out of the
-                             .md and of the PDF's copyable text
-    === 8 footnote ===       notes, each starting with its marker (¹ or * †), a blank line between
-    === 4-6 table ===        a Markdown table covering blocks 4 to 6
-    === 7 skip ===           no text to keep: picture, stamp, sideways watermark
-Lines are typed exactly as printed (same line breaks, end-of-line hyphens, Unicode
-superscripts like ¹), a blank line between paragraphs, _underscores_ around italics.
+A page file is plain Markdown for that page, under two header lines:
+
+    status: done             todo / draft / done; only done pages are built
+    page: 47                 the printed page number; blank if none shows (counted on)
+
+    A paragraph on one line, _italics_, a note marker[^12] as printed.
+
+    > A displayed quotation.
+
+    [^12]: The note's text. (A note running onto the next page: the next page's file
+    starts its part with the same label, [^12]: ...)
+
+Running heads, page numbers and watermarks are left out. Paragraphs, words broken by
+a hyphen and notes are joined across pages by build; "+ " at the start of a page
+forces a join.
 """
 from .build import build
-from .compose import compose
-from .sheets import prepare
-from .transcript import parse_transcript
+from .pages import pack, prepare, status
 
-__all__ = ['build', 'prepare', 'parse_transcript', 'compose']
+__all__ = ['build', 'pack', 'prepare', 'status']

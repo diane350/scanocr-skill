@@ -6,8 +6,8 @@ In a claude.ai chat the skill carries its own copy of the code (scripts/scanocr/
 by tools/package_skill.py), but first fetches the latest published code (PUBLISHED, copied
 there from scanocr's main branch on every merge), so code fixes need no new upload. If it
 can't (offline, GitHub not allowed in the chat's network settings), the bundled copy is
-used. In Claude Code on the scanocr repository the repository's code is used. Missing
-libraries (PyMuPDF, its fonts, numpy, Pillow) are installed on first run.
+used. In Claude Code on the scanocr repository the repository's code is used. PyMuPDF
+is installed on first run if missing.
 """
 import importlib
 import io
@@ -22,7 +22,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..', '..', '..'))   # <repo>/.claude/skills/<skill>/scripts
 SKILL = os.path.basename(os.path.dirname(HERE))
-NEEDED = {'pymupdf': 'pymupdf==2.0', 'pymupdf_fonts': 'pymupdf-fonts==1.0.5', 'numpy': 'numpy', 'PIL': 'pillow'}
+NEEDED = {'pymupdf': 'pymupdf==2.0'}
 PUBLISHED = 'https://github.com/diane350/scanocr-skill'
 # '' turns fetching off (tests); a file:// URL stands in for GitHub
 LATEST_URL = os.environ.get('SCANOCR_SKILL_URL', 'https://codeload.github.com/diane350/scanocr-skill/tar.gz/refs/heads/main')
@@ -97,7 +97,7 @@ def ensure_libraries():
     r = subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', *missing], capture_output=True, text=True)
     if r.returncode:
         print(r.stderr[-2000:])
-        sys.exit('Could not install the PDF libraries. In a chat, code execution needs network access '
+        sys.exit('Could not install PyMuPDF. In a chat, code execution needs network access '
                  'to package managers (Settings > Capabilities); then try again.')
     importlib.invalidate_caches()
 

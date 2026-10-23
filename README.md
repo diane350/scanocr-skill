@@ -1,7 +1,7 @@
 # transcribing-scanned-readings
 
-A Claude skill that turns a scanned reading into clean text (`.md`) and a searchable PDF
-for Zotero, with page numbers and linked footnotes.
+A Claude skill that turns a scanned reading into clean, quotable Markdown (`.md`), with
+the printed page numbers and the footnotes.
 
 **Install:** download `transcribing-scanned-readings.zip` and upload it in Claude under
 **Customize > Skills**. Code execution must be on in your settings.

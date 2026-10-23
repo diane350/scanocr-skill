@@ -1,173 +1,135 @@
-"""build: check the transcriptions, then write the clean text and the searchable PDF."""
-import json
-import os
+"""build: the done pages joined into one clean .md, with what to fix listed.
+
+Each page starts with its {47} page mark. A paragraph or quotation broken by a page
+is joined back when it plainly goes on (no closing punctuation, next part in lower
+case) or when the page starts with "+ "; a word hyphenated across the break is
+rejoined. A note continued on the next page (same label again, no marker there) is
+joined to its first part. Notes whose numbering starts again are relabelled so every
+label is unique. HTML comments (<!-- -->) are left out.
+"""
 import re
 
-import numpy as np
-import pymupdf as fitz
-from PIL import Image
+from .pages import load_pages
+from .text import continues, hyphen_vocabulary, join, page_labels
 
-from ..ocr.transcribed import Transcribed
-from ..pdfout import build_searchable_pdf, summary
-from ..pdfout.embed import padded_area
-from ..pdfout.lines import detect_lines
-from .compose import HEADING_RE, compose, label_rules, page_labels
-from .footnotes import add_pdf_links, link_notes
-from .transcript import ITALIC_RE, is_part, parse_transcript, transcript_path
-
-# running heads and footers stay visible in the scan but out of the copyable text, so a
-# copy across pages reads straight through (all but the page number: see text_layer)
-IN_LAYER = ('text', 'table', 'footnote')
-TABLE_RULE_RE = re.compile(r'[\s|:-]+')
+COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
+NOTE_DEF_RE = re.compile(r'^\[\^([^\]\s]+)\]:\s*(.*)$')
+NOTE_REF_RE = re.compile(r'\[\^([^\]\s]+)\](?!:)')
 
 
-def union(boxes):
-    return [min(b[0] for b in boxes), min(b[1] for b in boxes),
-            max(b[2] for b in boxes), max(b[3] for b in boxes)]
-
-
-def layer_lines(section):
-    """A section's printed lines for the text layer: italics, heading marks and the "+ "
-    continuation mark dropped; a table's rows with their cells side by side."""
-    if section.kind == 'table':
-        rows = [l for l in section.lines if l.strip() and not TABLE_RULE_RE.fullmatch(l)]
-        lines = [' '.join(c.strip() for c in row.strip().strip('|').split('|') if c.strip()) for row in rows]
-    else:
-        lines = [HEADING_RE.sub('', l) for l in section.lines if l.strip()]
-        lines[:1] = [l.removeprefix('+ ') for l in lines[:1]]
-    # italics can run over a line break, so they come off the lines together
-    return ITALIC_RE.sub(r'\1', '\n'.join(lines)).split('\n') if lines else lines
-
-
-def load(workdir, partial=False):
-    """The job, every page's parsed transcription, and the problems. With ``partial``,
-    pages that aren't ready (missing, not done, or with problems) are None instead."""
-    with open(os.path.join(workdir, 'job.json')) as f:
-        job = json.load(f)
-    pages, problems = [], []
-    for i, blocks in enumerate(job['blocks'], 1):
-        try:
-            with open(transcript_path(workdir, i), encoding='utf-8') as f:
-                page = parse_transcript(f.read(), len(blocks))
-        except OSError:
-            pages.append(None)
-            if not partial:
-                problems.append(f'page {i}: transcription file is missing')
+def blocks_of(body, vocab):
+    """[(kind, text)]: 'h' heading, 'p' paragraph, 'q' quotation, 't' table, 'n' note."""
+    out = []
+    for chunk in re.split(r'\n\s*\n', COMMENT_RE.sub('', body).strip()):
+        lines = [l.rstrip() for l in chunk.split('\n') if l.strip()]
+        if not lines:
             continue
-        page_problems = [f'page {i}: {p}' for p in page.problems]
-        if not page.problems and page.status != 'done':
-            page_problems.append(f'page {i}: not proofread yet (status: {page.status}); check every line, '
-                                 'then change its first line to "# status: done"')
-        if partial and page_problems:
-            page = None
+        first = lines[0].lstrip()
+        if first.startswith('#'):
+            out += [('h', l.strip()) for l in lines]
+        elif first.startswith('|'):
+            out.append(('t', '\n'.join(l.strip() for l in lines)))
+        elif NOTE_DEF_RE.match(first):
+            for line in lines:                   # several notes may share a chunk
+                if NOTE_DEF_RE.match(line.lstrip()):
+                    out.append(('n', line.strip()))
+                elif out and out[-1][0] == 'n':
+                    out[-1] = ('n', join(out[-1][1], line.strip(), vocab))
         else:
-            problems += page_problems
-        pages.append(page)
-    if partial:
-        pages = pages + [None] * (len(job['blocks']) - len(pages))
-        problems = [p for p in problems if not p.endswith('transcription file is missing')]
-    return job, pages, problems
+            kind = 'q' if first.startswith('>') else 'p'
+            text = ''
+            for line in lines:
+                text = join(text, re.sub(r'^\s*>\s?', '', line).strip() if kind == 'q' else line.strip(), vocab)
+            out.append((kind, text))
+    return out
 
 
-def section_boxes(page, blocks, gray):
-    """Each section's box in pixels. A block split into parts (the same number repeated,
-    e.g. body then footnotes with no gap between) shares its printed lines out among the
-    parts, in order, by how many lines each part has."""
-    secs = page.sections
-    boxes = [union(blocks[s.first - 1:s.last]) for s in secs]
-    i = 0
-    while i < len(secs):
-        j = i
-        while j + 1 < len(secs) and is_part(secs[j], secs[j + 1]):
-            j += 1
-        if j > i:
-            box = boxes[i]
-            area, inner_y = padded_area(box, gray.shape[1], gray.shape[0])
-            found = detect_lines(gray, *area, inner_y)
-            counts = [len(layer_lines(s)) for s in secs[i:j + 1]]
-            total, start = max(1, sum(counts)), 0
-            for k, n in enumerate(counts):
-                end = len(found) if k == len(counts) - 1 else start + round(n * len(found) / total)
-                part = found[start:end]
-                top = part[0][0] if part else (found[start - 1][1] if start else box[1])
-                boxes[i + k] = [box[0], top, box[2], part[-1][1] if part else top + 1]
-                start = end
-        i = j + 1
-    return boxes
+def join_marked(left, right, mark, vocab):
+    """``join``, with the page mark where the page break fell (after a rejoined word)."""
+    joined = join(left, right, vocab)
+    start = len(joined) - len(right)
+    if joined[start - 1:start] == ' ':
+        return f'{joined[:start]}{mark} {joined[start:]}'
+    end = joined.find(' ', start)                  # after the rejoined word and its punctuation
+    if end < 0:
+        return f'{joined} {mark}'
+    return f'{joined[:end]} {mark}{joined[end:]}'
 
 
-def is_page_number(section, label):
-    """Is ``section`` the printed page number (a header holding just the page's label)?"""
-    return section.kind == 'header' and bool(label) and ' '.join(layer_lines(section)).strip() == label
-
-
-def text_layer(page, gray, boxes, i, mismatched, label=''):
-    layer = []
-    # body text first, footnotes next, the printed page number last: copying from one
-    # column or page into the next doesn't run through the notes (viewers like Zotero copy
-    # in this order). The page number is in the layer because Zotero reads page numbers off
-    # the page and ignores the PDF's page labels when none on the page agrees with them.
-    order = {'footnote': 1, 'header': 2}
-    for s, box in sorted(zip(page.sections, boxes), key=lambda sb: order.get(sb[0].kind, 0)):
-        if s.kind not in IN_LAYER and not is_page_number(s, label):
+def compose(pages, labels):
+    """(markdown, problems) for parsed pages; pages not done appear as a gap."""
+    vocab = hyphen_vocabulary('\n'.join(p.body for p in pages if p.status == 'done'))
+    items, notes, problems = [], {}, []        # items: [kind, text]
+    seen_labels, prev_defs = set(), set()
+    for i, (page, label) in enumerate(zip(pages, labels), 1):
+        name = f'page {i}' + (f' (p. {label})' if label else '')
+        if page.status != 'done':
+            items.append(['gap', f'[{name}: not transcribed yet]'])
+            prev_defs = set()
             continue
-        lines = layer_lines(s)
-        layer.append({'category': s.kind, 'box': box, 'lines': lines})
-        area, inner_y = padded_area(box, gray.shape[1], gray.shape[0])
-        found = len(detect_lines(gray, *area, inner_y))
-        if found != len(lines):
-            mismatched.append(f'page {i} {s.name}: {len(lines)} line(s) typed, {found} found on the scan')
-    return json.dumps({'blocks': layer}, ensure_ascii=False)
+        problems += [f'{name}: {p}' for p in page.problems]
+        blocks = blocks_of(page.body, vocab)
+        defs = [(m.group(1), m.group(2)) for k, t in blocks if k == 'n' for m in [NOTE_DEF_RE.match(t)]]
+        refs = [r for k, t in blocks if k != 'n' for r in NOTE_REF_RE.findall(t)]
+        rename = {}
+        for lab, text in defs:
+            if lab in prev_defs and lab not in refs:     # a note running on from the page before
+                notes[lab] = join(notes[lab], text, vocab)
+                continue
+            new = lab
+            n = 2
+            while new in seen_labels:
+                new = f'{lab}-{n}'
+                n += 1
+            rename[lab] = new
+            seen_labels.add(new)
+            notes[new] = text
+        for r in refs:
+            if r not in rename:
+                problems.append(f'{name}: marker [^{r}] has no note on this page')
+        for lab, _ in defs:
+            if lab in rename and lab not in refs:
+                problems.append(f'{name}: note [^{lab}] has no marker on this page')
+        prev_defs = set(rename.values()) | {d for d, _ in defs if d in prev_defs}
+        mark = f'{{{label}}}' if label else ''
+        first = True
+        for kind, text in blocks:
+            if kind == 'n':
+                continue
+            text = NOTE_REF_RE.sub(lambda m: f'[^{rename.get(m.group(1), m.group(1))}]', text)
+            forced = first and text.startswith('+ ')
+            text = text.removeprefix('+ ')
+            last = items[-1] if items else None
+            if (first and last and last[0] == kind and kind in 'pq'
+                    and (forced or continues(last[1], text))):
+                last[1] = join_marked(last[1], text, mark, vocab) if mark else join(last[1], text, vocab)
+            elif first and mark and kind in 'ht':        # a heading or table keeps its own line
+                items += [['p', mark], [kind, text]]
+            elif first and mark:
+                items.append([kind, f'{mark} {text}'])
+            else:
+                items.append([kind, text])
+            first = False
+        if first and mark:                           # a page with no text of its own
+            items.append(['p', mark])
+    out = []
+    for kind, text in items:
+        out.append('> ' + text if kind == 'q' else text)
+    out += [f'[^{lab}]: {text}' for lab, text in notes.items()]
+    return '\n\n'.join(out) + '\n', problems
 
 
-def build(workdir, outdir, replace_old_text=True, partial=False):
-    """Write the .md and the searchable PDF. ``partial``: build the pages that are done
-    (the others keep their old text and show as a gap in the .md)."""
-    job, pages, problems = load(workdir, partial)
+def build(workdir, out_path, partial=False):
+    """Write the .md; True if it was written. Lists problems to fix either way."""
+    pages = load_pages(workdir)
+    todo = [i for i, p in enumerate(pages, 1) if p.status != 'done']
+    if todo and not partial:
+        print(f'Not done yet: pages {", ".join(map(str, todo))}. Finish them, or build with --partial.')
+        return False
+    md, problems = compose(pages, page_labels([p.number for p in pages]))
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(md)
+    print(f'Wrote {out_path}')
     if problems:
-        print('Not built yet. Fix these in the transcription files, then build again:')
-        print('\n'.join(f'  {p}' for p in problems))
-        return None
-    if partial and not any(pages):
-        print('No page is done yet: nothing to build.')
-        return None
-    labels = page_labels([p.number if p else '' for p in pages])
-    notes, note_problems = link_notes(pages, labels)
-    mismatched = []
-    raws, boxes = [], []
-    for i, (page, image, blocks) in enumerate(zip(pages, job['pages'], job['blocks']), 1):
-        if page is None:
-            raws.append(None)
-            boxes.append([])
-            continue
-        gray = np.array(Image.open(image).convert('L'))
-        boxes.append(section_boxes(page, blocks, gray))
-        raws.append(text_layer(page, gray, boxes[-1], i, mismatched, labels[i - 1]))
-
-    stem = os.path.splitext(os.path.basename(job['source']))[0]
-    os.makedirs(outdir, exist_ok=True)
-    md = os.path.join(outdir, f'{stem}.md')
-    with open(md, 'w', encoding='utf-8') as f:
-        f.write(compose(pages, labels, notes))
-    pdf = os.path.join(outdir, f'{stem}_searchable.pdf')
-    stats = build_searchable_pdf(job['source'], job['pages'], raws, Transcribed(), pdf, replace_old_text,
-                                 remove_watermarks=False)    # Claude marks watermarks as skip
-    print(summary(os.path.basename(pdf), stats))
-    sizes = [Image.open(image).size for image in job['pages']]
-    linked = add_pdf_links(pdf, notes, boxes, sizes)
-    if rules := label_rules(labels):
-        with fitz.open(pdf) as doc:                  # Zotero shows and cites these numbers
-            doc.set_page_labels(rules)
-            doc.saveIncr()
-    if notes.notes:
-        print(f'Footnotes: {len(notes.notes)} found, {linked} linked both ways in the PDF')
-    if note_problems:
-        print('Footnotes to check:')
-        print('\n'.join(f'  {p}' for p in note_problems))
-    if mismatched:
-        print('Line breaks to check (those blocks were placed by width instead of by your lines):')
-        print('\n'.join(f'  {m}' for m in mismatched))
-    if partial:
-        print(f'Partial build: {sum(1 for p in pages if p)} of {len(pages)} pages')
-    print(f'Done:\n  {md}\n  {pdf}')
-    return md, pdf
+        print('To check:\n  ' + '\n  '.join(problems))
+    return True
