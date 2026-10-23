@@ -1,6 +1,7 @@
 """Run the scanocr transcription tool from this skill, wherever the skill is installed.
 
-    python3 scripts/scanocr_cli.py prepare|status|build|pack ...   (same as python -m scanocr.transcribe)
+    python3 scripts/scanocr_cli.py <command> ...   (the commands of python -m scanocr.transcribe;
+                                                    --help lists them)
 
 In a claude.ai chat the skill carries its own copy of the code (scripts/scanocr/, put in
 by tools/package_skill.py), but first fetches the latest published code (PUBLISHED, copied
@@ -17,16 +18,18 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..', '..', '..'))   # <repo>/.claude/skills/<skill>/scripts
 SKILL = os.path.basename(os.path.dirname(HERE))
-NEEDED = {'pymupdf': 'pymupdf==2.0'}
+NEEDED = {'pymupdf': 'pymupdf==1.28.2'}     # as in pyproject.toml
 PUBLISHED = 'https://github.com/diane350/scanocr-skill'
 # '' turns fetching off (tests); a file:// URL stands in for GitHub
 LATEST_URL = os.environ.get('SCANOCR_SKILL_URL', 'https://codeload.github.com/diane350/scanocr-skill/tar.gz/refs/heads/main')
 CACHE = os.path.join(tempfile.gettempdir(), 'scanocr-skill-latest')
+MAX_AGE = 6 * 3600                          # seconds; an older copy in CACHE is fetched again
 
 
 def has_code(place):
@@ -43,10 +46,11 @@ def code_location():
 
 
 def latest_code():
-    """The published code, fetched once per sandbox into CACHE; None if it can't be had."""
+    """The published code, fetched into CACHE (again once the copy there is MAX_AGE old);
+    None if it can't be had."""
     if not LATEST_URL:
         return None
-    if not has_code(CACHE):
+    if not has_code(CACHE) or time.time() - os.path.getmtime(CACHE) > MAX_AGE:
         try:
             data = urllib.request.urlopen(LATEST_URL, timeout=20).read()
             part = CACHE + '.part'
@@ -63,9 +67,12 @@ def latest_code():
                 raise ValueError('no scanocr code in it')
             shutil.rmtree(CACHE, ignore_errors=True)
             os.replace(part, CACHE)
+            os.utime(CACHE)
         except Exception as e:                  # offline, blocked by the chat's network settings, ...
-            print(f'Using the code bundled with the skill (the latest could not be fetched: {e}).', flush=True)
-            return None
+            if not has_code(CACHE):
+                print(f'Using the code bundled with the skill (the latest could not be fetched: {e}).', flush=True)
+                return None
+            print(f'Using the code fetched earlier (the latest could not be fetched: {e}).', flush=True)
     note_new_instructions()
     return CACHE
 

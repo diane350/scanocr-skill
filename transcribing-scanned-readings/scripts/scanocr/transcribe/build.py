@@ -9,12 +9,11 @@ label is unique. HTML comments (<!-- -->) are left out.
 """
 import re
 
+from ..markup import NOTE_DEF_RE, NOTE_REF_RE, page_mark, unique_label
 from .pages import load_pages
 from .text import continues, hyphen_vocabulary, join, page_labels
 
 COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
-NOTE_DEF_RE = re.compile(r'^\[\^([^\]\s]+)\]:\s*(.*)$')
-NOTE_REF_RE = re.compile(r'\[\^([^\]\s]+)\](?!:)')
 
 
 def blocks_of(body, vocab):
@@ -60,26 +59,28 @@ def compose(pages, labels):
     """(markdown, problems) for parsed pages; pages not done appear as a gap."""
     vocab = hyphen_vocabulary('\n'.join(p.body for p in pages if p.status == 'done'))
     items, notes, problems = [], {}, []        # items: [kind, text]
-    seen_labels, prev_defs = set(), set()
+    seen_labels = set()
+    running = {}            # notes on the page before, as labelled there -> as labelled in the .md
     for i, (page, label) in enumerate(zip(pages, labels), 1):
         name = f'page {i}' + (f' (p. {label})' if label else '')
         if page.status != 'done':
             items.append(['gap', f'[{name}: not transcribed yet]'])
-            prev_defs = set()
+            running = {}
             continue
         problems += [f'{name}: {p}' for p in page.problems]
         blocks = blocks_of(page.body, vocab)
         defs = [(m.group(1), m.group(2)) for k, t in blocks if k == 'n' for m in [NOTE_DEF_RE.match(t)]]
         refs = [r for k, t in blocks if k != 'n' for r in NOTE_REF_RE.findall(t)]
-        rename = {}
+        rename, continued = {}, {}
         for lab, text in defs:
-            if lab in prev_defs and lab not in refs:     # a note running on from the page before
-                notes[lab] = join(notes[lab], text, vocab)
+            if lab in running and lab not in refs:       # a note running on from the page before
+                notes[running[lab]] = join(notes[running[lab]], text, vocab)
+                continued[lab] = running[lab]
                 continue
             new = lab
             n = 2
             while new in seen_labels:
-                new = f'{lab}-{n}'
+                new = unique_label(lab, n)
                 n += 1
             rename[lab] = new
             seen_labels.add(new)
@@ -90,8 +91,8 @@ def compose(pages, labels):
         for lab, _ in defs:
             if lab in rename and lab not in refs:
                 problems.append(f'{name}: note [^{lab}] has no marker on this page')
-        prev_defs = set(rename.values()) | {d for d, _ in defs if d in prev_defs}
-        mark = f'{{{label}}}' if label else ''
+        running = {**continued, **rename}
+        mark = page_mark(label) if label else ''
         first = True
         for kind, text in blocks:
             if kind == 'n':

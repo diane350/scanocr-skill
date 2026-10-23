@@ -3,14 +3,17 @@ a PDF's old text layer for a draft."""
 import bisect
 import re
 
+from ..markup import NOTE_REF
+
 # a line-end hyphen after one of these is part of the word (self-conscious, non-official)
 PREFIXES = ('self', 'non', 'quasi', 'ex', 'well', 'half', 'all')
-TERMINAL_RE = re.compile(r'[.!?:।॥۔؟]["”’\')\]]*(?:\[\^[^\]]+\])?$')
+TERMINAL_RE = re.compile(rf'[.!?:।॥۔؟]["”’\')\]]*(?:{NOTE_REF})?$')
 # a word's letters, with combining accents (r̥, m̐) and apostrophes
-W = r"[\ẁ-ͯ᪰-᫿᷀-᷿⃐-⃿︠-︯’']"
-WORD_RE = re.compile(rf"{W}+")
-HYPHENATED_RE = re.compile(rf"{W}+(?:-{W}+)+")
+WORD_CHAR = r"[\ẁ-ͯ᪰-᫿᷀-᷿⃐-⃿︠-︯’']"
+WORD_RE = re.compile(rf"{WORD_CHAR}+")
+HYPHENATED_RE = re.compile(rf"{WORD_CHAR}+(?:-{WORD_CHAR}+)+")
 ROMAN = {'i': 1, 'v': 5, 'x': 10, 'l': 50, 'c': 100, 'd': 500, 'm': 1000}
+ROMAN_MAX = 400             # front matter ends well before; MIX or DIV in a running head is a word
 
 LIGATURES = str.maketrans({'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st'})
 WATERMARK_RE = re.compile(r'(downloaded\s+(by|from)\b.*|this content downloaded from.*|'
@@ -32,7 +35,7 @@ def join(left, right, vocab=()):
     a hyphen (supplica- / tion) but not a compound (self- / conscious)."""
     if not left:
         return right
-    if m := re.search(rf"({W}+)-_?$", left):
+    if m := re.search(rf"({WORD_CHAR}+)-_?$", left):
         stem, nxt = m.group(1), WORD_RE.match(right.lstrip('_'))
         compound = f'{stem}-{nxt.group(0) if nxt else ""}'.lower()
         if goes_on(right) and compound not in vocab and stem.lower() not in PREFIXES:
@@ -73,9 +76,12 @@ def number_value(number):
     n = number.strip()
     if n.isdigit():
         return int(n), 'arabic'
-    if n and all(c in ROMAN for c in n.lower()):
+    if n and (n.islower() or n.isupper()) and all(c in ROMAN for c in n.lower()):
         vals = [ROMAN[c] for c in n.lower()]
-        return sum(-v if v < w else v for v, w in zip(vals, vals[1:] + [0])), 'roman' if n.islower() else 'ROMAN'
+        value = sum(-v if v < w else v for v, w in zip(vals, vals[1:] + [0]))
+        style = 'roman' if n.islower() else 'ROMAN'
+        if value < ROMAN_MAX and _show(value, style) == n:      # written the usual way: not CIVIL, IIII
+            return value, style
     return None
 
 
@@ -102,11 +108,13 @@ def page_labels(numbers):
             continue
         k = bisect.bisect(known, i)                 # known[k - 1] < i < known[k]
         if k:
-            value, style = vals[known[k - 1]]
-            out.append(_show(value + i - known[k - 1], style))
+            before = known[k - 1]
+            value, style = vals[before]
+            out.append(_show(value + i - before, style))
         elif known and vals[known[0]][0] - (known[0] - i) >= 1:
-            value, style = vals[known[0]]
-            out.append(_show(value - (known[0] - i), style))
+            after = known[0]
+            value, style = vals[after]
+            out.append(_show(value - (after - i), style))
         else:
             out.append(None)
     return out
