@@ -58,14 +58,20 @@ def write_page(path, status, number, body):
 
 # -- prepare -------------------------------------------------------------------
 
+def _lines(pdf_page):
+    """The text layer's lines. (Without the page's images, which a scan is: copying them
+    out made this ~100 times slower.)"""
+    blocks = pdf_page.get_text('dict', flags=pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES)['blocks']
+    return [l for b in blocks for l in b.get('lines', [])]
+
+
 def _text_lines(pdf_page):
     """Boxes of the page's text lines: (level ones, sideways ones such as a "Downloaded
     by..." watermark)."""
     level, sideways = [], []
-    for b in pdf_page.get_text('dict')['blocks']:
-        for l in b.get('lines', []):
-            if ''.join(s['text'] for s in l['spans']).strip():
-                (level if abs(l['dir'][1]) < 0.1 else sideways).append(pymupdf.Rect(l['bbox']))
+    for l in _lines(pdf_page):
+        if ''.join(s['text'] for s in l['spans']).strip():
+            (level if abs(l['dir'][1]) < 0.1 else sideways).append(pymupdf.Rect(l['bbox']))
     return level, sideways
 
 
@@ -74,15 +80,17 @@ def _printed_area(small, scale, ignore=()):
     blank margins cost as much to look at as print. ``small``: the page at low resolution;
     ``ignore``: boxes (same units) whose ink doesn't count."""
     w, h, n, data = small.width, small.height, small.n, small.samples
-    skip = [pymupdf.IRect(r.x0 * scale, r.y0 * scale, r.x1 * scale + 1, r.y1 * scale + 1) for r in ignore]
-    rows, cols = [0] * h, [0] * w
-    for y in range(h):
-        for x in range(w):
-            i = (y * w + x) * n
-            if min(data[i:i + min(n, 3)]) < 200 and not any(x in range(r.x0, r.x1) and y in range(r.y0, r.y1)
-                                                          for r in skip):
-                rows[y] += 1
-                cols[x] += 1
+    dark = bytes(int(v < 200) for v in range(256))
+    ink = 0                                         # dark in any colour: 1 per pixel
+    for c in range(min(n, 3)):
+        ink |= int.from_bytes(data[c::n].translate(dark), 'big')
+    ink = bytearray(ink.to_bytes(w * h, 'big'))
+    for r in ignore:
+        x0, x1 = max(0, int(r.x0 * scale)), min(w, int(r.x1 * scale + 1))
+        for y in range(max(0, int(r.y0 * scale)), min(h, int(r.y1 * scale + 1))):
+            ink[y * w + x0:y * w + x1] = bytes(max(0, x1 - x0))
+    rows = [ink.count(1, y * w, y * w + w) for y in range(h)]
+    cols = [ink[x::w].count(1) for x in range(w)]
     ys = [y for y, c in enumerate(rows) if c > 1]
     xs = [x for x, c in enumerate(cols) if c > 1]
     if not ys or not xs:
@@ -124,7 +132,7 @@ def _render(sources, pages_dir):
     for src in sources:
         try:
             doc = pymupdf.open(src)
-        except Exception:
+        except (pymupdf.FileDataError, pymupdf.FileNotFoundError):
             raise SystemExit(f'Not a PDF or image: {src}')
         for pg in doc:
             path = os.path.join(pages_dir, f'page_{len(out) + 1:04d}.png')
@@ -204,11 +212,10 @@ def draft(pdf_page):
     very top or bottom (running heads, page numbers) become comments, which build
     leaves out."""
     rows = []
-    for b in pdf_page.get_text('dict')['blocks']:
-        for l in b.get('lines', []):
-            spans = [s for s in l['spans'] if s['text']]
-            if spans and ''.join(s['text'] for s in spans).strip() and abs(l['dir'][1]) < 0.1:
-                rows.append((l['bbox'], spans))           # (sideways watermarks left out)
+    for l in _lines(pdf_page):
+        spans = [s for s in l['spans'] if s['text']]
+        if spans and ''.join(s['text'] for s in spans).strip() and abs(l['dir'][1]) < 0.1:
+            rows.append((l['bbox'], spans))               # (sideways watermarks left out)
     if not rows:
         return None
     rows.sort(key=lambda r: ((r[0][1] + r[0][3]) / 2, r[0][0]))
@@ -231,7 +238,7 @@ def draft(pdf_page):
             continue
         if box[3] < 0.12 * height or box[1] > 0.93 * height:
             words = text.split()
-            for w in {words[0], words[-1]}:
+            for w in dict.fromkeys((words[0], words[-1])):
                 w = w.strip('_')
                 if w.isdigit() or (number_value(w) and len(words) <= 2):
                     numbers.append(w)

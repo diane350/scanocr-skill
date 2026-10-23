@@ -1,5 +1,6 @@
 """Text rules: joining broken words and sentences, printed page numbers, and cleaning
 a PDF's old text layer for a draft."""
+import bisect
 import re
 
 # a line-end hyphen after one of these is part of the word (self-conscious, non-official)
@@ -99,14 +100,13 @@ def page_labels(numbers):
         if v:
             out.append(numbers[i].strip())
             continue
-        before = [k for k in known if k < i]
-        after = [k for k in known if k > i]
-        if before:
-            value, style = vals[before[-1]]
-            out.append(_show(value + i - before[-1], style))
-        elif after and vals[after[0]][0] - (after[0] - i) >= 1:
-            value, style = vals[after[0]]
-            out.append(_show(value - (after[0] - i), style))
+        k = bisect.bisect(known, i)                 # known[k - 1] < i < known[k]
+        if k:
+            value, style = vals[known[k - 1]]
+            out.append(_show(value + i - known[k - 1], style))
+        elif known and vals[known[0]][0] - (known[0] - i) >= 1:
+            value, style = vals[known[0]]
+            out.append(_show(value - (known[0] - i), style))
         else:
             out.append(None)
     return out
