@@ -18,7 +18,6 @@ Colab. Both were removed so the work goes into the `.md`; see git history before
 | Every draft line its own paragraph | Indent measured from the leftmost text, which was the sideways "Downloaded by…" watermark at x = −1 | Sideways lines dropped (by text direction); margins from the median of body lines |
 | Folio "146" lost from drafts | A tall-thin box filter for watermarks also caught short numbers | Filter by the line's direction, not its shape |
 | Two page numbers on a page (146 and 46) | A reprint inside an anthology | Draft lists both in a comment; the skill asks the user once |
-| Zotero shows the wrong page | — | Not this tool's job now: the `.md` carries `{47}` marks |
 | 100+ page books, sessions expire | Cloud containers are temporary | Drafts pre-filled from the old text; `status`; `pack` / `prepare --resume`; `build --partial` |
 
 ## Running in a claude.ai chat
