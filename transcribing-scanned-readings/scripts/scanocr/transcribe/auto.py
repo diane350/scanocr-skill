@@ -36,7 +36,14 @@ PROVIDERS = {'claude': ('anthropic-key', ('ANTHROPIC_API_KEY',), 'an Anthropic A
              'gemini': ('gemini-key', ('GEMINI_API_KEY', 'GOOGLE_API_KEY'), 'a Gemini API key (aistudio.google.com)')}
 PARALLEL = 4
 MAX_TOKENS = 8000
-IMAGE_PX_PER_TOKEN = 750          # an image costs about width x height / 750 tokens
+# What a page image costs: Claude reads 28 x 28 px patches (width/28 x height/28 tokens) and scales an
+# image down to at most 2,576 px on the long edge and 4,784 tokens (Anthropic's docs for models from 4.7 on);
+# Gemini 768 px tiles at 258 tokens each. A page is scaled to fit before it is sent, so a big scan costs
+# no more than that and stays under the 10 MB image limit.
+MAX_EDGE = 2576
+MAX_TOKENS_PER_IMAGE = 4784
+MAX_PIXELS = MAX_TOKENS_PER_IMAGE * 28 * 28
+JPEG_OVER = 7_000_000             # bytes of PNG above which the page goes as a JPEG
 TEXT_CHARS_PER_TOKEN = 3.5
 EXPECTED_OUT = 400                # corrections for one page, tokens
 
@@ -176,7 +183,37 @@ def _sends_image(page):
     return TYPED not in page.body
 
 
-def estimate(workdir):
+def send_size(width, height):
+    """The size a page image is sent at: the long edge and the pixel count capped."""
+    scale = min(1, MAX_EDGE / max(width, height), (MAX_PIXELS / (width * height)) ** 0.5)
+    while True:
+        size = max(1, int(width * scale)), max(1, int(height * scale))
+        if -(-size[0] // 28) * -(-size[1] // 28) <= MAX_TOKENS_PER_IMAGE:       # patches round up
+            return size
+        scale *= 0.98
+
+
+def image_tokens(model, width, height):
+    width, height = send_size(width, height)
+    if provider(model) == 'gemini':
+        return -(-width // 768) * -(-height // 768) * 258
+    return -(-width // 28) * -(-height // 28)
+
+
+def page_image(path):
+    """(image bytes, media type) of a page image, scaled to ``send_size``."""
+    pix = pymupdf.Pixmap(path)
+    size = send_size(pix.width, pix.height)
+    if size != (pix.width, pix.height):
+        pix = pymupdf.Pixmap(pix, *size)
+    data = pix.tobytes('png')
+    if len(data) > JPEG_OVER:
+        pix = pymupdf.Pixmap(pymupdf.csGRAY if pix.n - pix.alpha == 1 else pymupdf.csRGB, pix)
+        return pix.tobytes('jpeg', jpg_quality=90), 'image/jpeg'
+    return data, 'image/png'
+
+
+def estimate(workdir, model=DEFAULT_MODEL):
     """(pages, tokens in, tokens out) to proofread the drafts."""
     drafts, _ = pending(workdir)
     tokens_in = 0
@@ -186,7 +223,7 @@ def estimate(workdir):
         tokens_in += int((len(SYSTEM) + len(page.body)) / TEXT_CHARS_PER_TOKEN)
         if _sends_image(page):
             pix = pymupdf.Pixmap(os.path.join(workdir, 'pages', f'page_{i:04d}.png'))
-            tokens_in += int(pix.width * pix.height / IMAGE_PX_PER_TOKEN)
+            tokens_in += image_tokens(model, pix.width, pix.height)
     return len(drafts), tokens_in, len(drafts) * EXPECTED_OUT
 
 
@@ -217,9 +254,9 @@ def proofread_page(ask, model, workdir, i):
     content = [{'type': 'text', 'text': f'Printed page number: {page.number or "(none found)"}\n\n'
                                         f'Draft:\n\n{page.body.replace(TYPED, "").strip()}'}]
     if _sends_image(page):
-        with open(os.path.join(workdir, 'pages', f'page_{i:04d}.png'), 'rb') as f:
-            data = b64encode(f.read()).decode()
-        content.insert(0, {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': data}})
+        data, media_type = page_image(os.path.join(workdir, 'pages', f'page_{i:04d}.png'))
+        content.insert(0, {'type': 'image', 'source': {'type': 'base64', 'media_type': media_type,
+                                                       'data': b64encode(data).decode()}})
     messages = [{'role': 'user', 'content': content}]
     used_in = used_out = 0
     for attempt in range(2):
@@ -243,7 +280,7 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
     workdir = str(workdir or pdf.with_name(pdf.stem + '_pages'))
     prepare(str(pdf), workdir)                    # keeps page files already there: a rerun carries on
     drafts, empty = pending(workdir)
-    n, tin, tout = estimate(workdir)
+    n, tin, tout = estimate(workdir, model)
     price = cost(model, tin, tout)
     estimate_line = (f'{n} pages to proofread with {model}: about {tin:,} tokens in, {tout:,} out'
                      + (f', roughly ${price:.2f}' if price is not None else '') + ' (list prices; an estimate).')
