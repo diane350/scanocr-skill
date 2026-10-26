@@ -16,6 +16,7 @@ import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import pymupdf
@@ -246,9 +247,10 @@ def parse_reply(reply):
     return number, '' if text.upper() == 'OK' else text
 
 
-def proofread_page(ask, model, workdir, i):
-    """Page ``i``'s draft corrected and marked done; (tokens in, tokens out). SystemExit if
-    the corrections still don't apply after being sent back once."""
+def proofread_page(ask, model, workdir, i, used=None):
+    """Page ``i``'s draft corrected and marked done. SystemExit if the corrections still don't
+    apply after being sent back once. ``used``: [tokens in, tokens out, tries], added to as it
+    goes, so what a failed page cost is known too."""
     with open(page_path(workdir, i), encoding='utf-8') as f:
         page = parse_page(f.read())
     content = [{'type': 'text', 'text': f'Printed page number: {page.number or "(none found)"}\n\n'
@@ -258,14 +260,14 @@ def proofread_page(ask, model, workdir, i):
         content.insert(0, {'type': 'image', 'source': {'type': 'base64', 'media_type': media_type,
                                                        'data': b64encode(data).decode()}})
     messages = [{'role': 'user', 'content': content}]
-    used_in = used_out = 0
+    used = [0, 0, 0] if used is None else used
     for attempt in range(2):
         reply, tin, tout = ask(model, SYSTEM, messages)
-        used_in, used_out = used_in + tin, used_out + tout
+        used[0], used[1], used[2] = used[0] + tin, used[1] + tout, used[2] + 1
         number, corrections = parse_reply(reply)
         try:
             apply_fixes(workdir, i, corrections, number)
-            return used_in, used_out
+            return used
         except SystemExit as e:
             if attempt:
                 raise
@@ -279,6 +281,13 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
     pdf = Path(pdf)
     workdir = str(workdir or pdf.with_name(pdf.stem + '_pages'))
     prepare(str(pdf), workdir)                    # keeps page files already there: a rerun carries on
+    say, logfile = log, os.path.join(workdir, 'transcribe-log.txt')
+
+    def log(text):                                # to the window or terminal, and to a file that outlives it
+        say(text)
+        with open(logfile, 'a', encoding='utf-8') as f:
+            f.write(f'{datetime.now():%H:%M:%S} {text}\n')
+    log(f'--- {"check" if check else "run"} with {model}: {pdf.name}')
     drafts, empty = pending(workdir)
     n, tin, tout = estimate(workdir, model)
     price = cost(model, tin, tout)
@@ -304,23 +313,25 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
     def one(i):
         if stop.is_set():
             return
+        used = [0, 0, 0]
         try:
-            tin, tout = proofread_page(ask, model, workdir, i)
+            proofread_page(ask, model, workdir, i, used)
             problem = None
         except FatalError as e:
             stop.set()
             fatal.append(str(e))
             return
         except SystemExit as e:
-            tin = tout = 0
             problem = ' '.join(str(e).split()[:14])
         with lock:
-            totals[0] += tin
-            totals[1] += tout
+            totals[0] += used[0]
+            totals[1] += used[1]
             done[0] += 1
             if problem:
                 failed.append(i)
-            log(f'page {i}: left as a draft ({problem})' if problem else f'page {i} done ({done[0]} of {len(drafts)})')
+            spent = f'{used[0]:,} in, {used[1]:,} out, {used[2]} {"try" if used[2] == 1 else "tries"}'
+            log(f'page {i}: left as a draft ({problem}); {spent}' if problem
+                else f'page {i} done ({done[0]} of {len(drafts)}): {spent}')
     with ThreadPoolExecutor(PARALLEL) as pool:
         list(pool.map(one, drafts))
     if fatal:
