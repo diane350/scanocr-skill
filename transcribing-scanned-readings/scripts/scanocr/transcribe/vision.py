@@ -6,10 +6,10 @@ out to Google.
                                      [--limit 900] [--dry-run] [--force]
 
 Writes ``<scan>_ocr.pdf`` (page images unchanged) and ``<scan>_ocr.txt`` (the OCR text).
-Needs ``pip install 'scanocr[vision]'`` and ``gcloud auth application-default login``
-(no key file). Each page's result is kept in ``<out>_vision_cache/``, so a re-run costs
-nothing, and a monthly count of pages sent (~/.local/state/scanocr/usage.json) stops the
-run before ``--limit`` (free tier: 1,000 units a month; check Google's current pricing).
+Needs ``pip install 'scanocr[vision]'`` and a Google sign-in: ``gcloud auth application-default
+login``, or the app's own (``--sign-in client.json``, see vision_auth). No key file.
+Each page's result is kept in ``<out>_vision_cache/``, so a re-run costs nothing, and a
+monthly count of pages sent (~/.local/state/scanocr/usage.json) stops the run before ``--limit`` (free tier: 1,000 units a month; check Google's current pricing).
 """
 import json
 import os
@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pymupdf
+
+from . import vision_auth
 
 MAX_BYTES = 7_000_000       # raw bytes: base64 adds ~37%, which stays under the 10 MB request limit
 LEDGER = Path.home() / '.local/state/scanocr/usage.json'
@@ -93,10 +95,11 @@ def vision_recognizer(hints):
     """A function image bytes -> {'text': ..., 'words': [[word, x0, y0, x1, y1], ...]} that
     asks Google Cloud Vision (DOCUMENT_TEXT_DETECTION), retrying when the service is busy."""
     vision, exceptions = _vision()
+    creds = vision_auth.credentials()       # the app's own sign-in, else gcloud's
     try:
-        client = vision.ImageAnnotatorClient()
+        client = vision.ImageAnnotatorClient(credentials=creds)
     except Exception as e:                  # no credentials
-        raise SystemExit(f'{e}\nSign in with: gcloud auth application-default login')
+        raise SystemExit(f'{e}\nSign in with the app (File > OCR a scan) or: gcloud auth application-default login')
     busy = (exceptions.ServiceUnavailable, exceptions.DeadlineExceeded, exceptions.InternalServerError)
 
     def recognize(data):
@@ -171,10 +174,10 @@ def add_text_layer(page, result, font):
         writer.write_text(page, render_mode=3, morph=(base, pymupdf.Matrix(stretch, 1)))
 
 
-def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=False, recognize=None):
+def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=False, recognize=None, log=print):
     """OCR the pages of ``src`` into ``out`` (default: <src>_ocr.pdf) and its .txt. Returns
     the PDF's path (None for a dry run). ``recognize``: image bytes -> result, instead of
-    Google's (for tests)."""
+    Google's (for tests); ``log``: where the progress lines go."""
     src = Path(src)
     out = Path(out) if out else src.with_name(src.stem + '_ocr.pdf')
     if out.resolve() == src.resolve():
@@ -185,13 +188,13 @@ def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=Fa
     cached = lambda p: cache / f'page_{p + 1:04d}.json'
     todo = [p for p in chosen if not cached(p).exists()]
     used = units_used()
-    print(f'{len(chosen)} pages selected, {len(todo)} need OCR (the rest are cached). '
+    log(f'{len(chosen)} pages selected, {len(todo)} need OCR (the rest are cached). '
           f'Units used this month by this tool: {used}')
     if dry_run:
         for p in chosen:
             data, w, h = encode(doc[p])
-            print(f'page {p + 1}: sending {w}x{h}px, {len(data) / 1e6:.2f} MB' + ('  [cached]' if p not in todo else ''))
-        print(f'Dry run: would use {len(todo)} units. Nothing was sent.')
+            log(f'page {p + 1}: sending {w}x{h}px, {len(data) / 1e6:.2f} MB' + ('  [cached]' if p not in todo else ''))
+        log(f'Dry run: would use {len(todo)} units. Nothing was sent.')
         return None
     if used + len(todo) > limit and not force:
         raise SystemExit(f'Stopping: {used} + {len(todo)} would pass your limit of {limit} a month. '
@@ -201,7 +204,7 @@ def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=Fa
     cache.mkdir(exist_ok=True)
     fontfile = find_font()
     if fontfile is None:
-        print('WARNING: DejaVu Sans not found; accents may be lost in the text layer.')
+        log('WARNING: DejaVu Sans not found; accents may be lost in the text layer.')
     font = pymupdf.Font(fontfile=fontfile) if fontfile else pymupdf.Font('helv')
     texts = []
     for p in chosen:
@@ -213,12 +216,12 @@ def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=Fa
             result = {**recognize(data), 'w': w, 'h': h}
             cached(p).write_text(json.dumps(result))
             add_units(1)
-            print(f'page {p + 1}: OCR done ({len(result["words"])} words)')
+            log(f'page {p + 1}: OCR done ({len(result["words"])} words)')
         if page.rotation:
-            print(f'page {p + 1}: WARNING page rotation {page.rotation}; text may be misplaced')
+            log(f'page {p + 1}: WARNING page rotation {page.rotation}; text may be misplaced')
         add_text_layer(page, result, font)
         texts.append(f'=== page {p + 1} ===\n{result["text"]}\n')
     doc.save(out, garbage=3, deflate=True)
     out.with_suffix('.txt').write_text('\n'.join(texts), encoding='utf-8')
-    print(f'Saved {out} and {out.with_suffix(".txt")}. Units used this month: {units_used()}')
+    log(f'Saved {out} and {out.with_suffix(".txt")}. Units used this month: {units_used()}')
     return out

@@ -4,6 +4,8 @@ import sys
 from . import __doc__ as DOC
 from .build import build
 from .pages import fix, pack, prepare, status, zoom
+from . import vision_auth
+from .auto import DEFAULT_MODEL, run as auto
 from .vision import ocr
 
 
@@ -45,7 +47,17 @@ def main(argv=None):
     o.add_argument('--limit', type=int, default=900, help='stop before this many units a month')
     o.add_argument('--dry-run', action='store_true', help='show what would be sent, send nothing')
     o.add_argument('--force', action='store_true', help='go past --limit')
-    o.set_defaults(run=lambda a: ocr(a.pdf, a.output, a.pages, a.lang, a.limit, a.dry_run, a.force))
+    o.add_argument('--sign-in', metavar='CLIENT_JSON', help='sign in to Google with a Desktop-app OAuth client first')
+    o.set_defaults(run=lambda a: (a.sign_in and vision_auth.sign_in(a.sign_in)) or
+                   ocr(a.pdf, a.output, a.pages, a.lang, a.limit, a.dry_run, a.force))
+    t = sub.add_parser('auto', help='proofread an OCR\'d scan\'s drafts with Claude through the API and build the .md '
+                                    '(optional; needs an API key)')
+    t.add_argument('pdf', help='a PDF with a text layer, e.g. from ocr')
+    t.add_argument('out', help='the .md to write')
+    t.add_argument('--workdir', help='default: <pdf>_pages; a rerun carries on from the pages done')
+    t.add_argument('--model', default=DEFAULT_MODEL)
+    t.add_argument('--check', action='store_true', help='show the page count and a cost estimate, send nothing')
+    t.set_defaults(run=lambda a: auto(a.pdf, a.out, a.workdir, a.model, a.check))
     a = ap.parse_args(argv)
     a.run(a)
 

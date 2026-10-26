@@ -447,10 +447,17 @@ def status(workdir):
 
 
 def fix(workdir, i, corrections):
-    """Page ``i``'s draft corrected and marked done, without writing the whole page out.
-    ``corrections``: lines 'wrong text ==> right text' (\\n for a line break; none if the
-    draft is right). Each wrong text must occur exactly once; if any doesn't, nothing is
-    changed."""
+    """``apply_fixes``, then say so."""
+    n = apply_fixes(workdir, i, corrections)
+    print(f'{os.path.basename(page_path(workdir, i))}: {n} fixes, done')
+
+
+def apply_fixes(workdir, i, corrections, number=None):
+    """Page ``i``'s draft corrected and marked done, without writing the whole page out;
+    returns how many corrections were made. ``corrections``: lines 'wrong text ==> right text'
+    (\\n for a line break; none if the draft is right). Each wrong text must occur exactly
+    once; if any doesn't, nothing is changed. ``number``: the printed page number, if it
+    is to be set."""
     path = page_path(workdir, i)
     with open(path, encoding='utf-8') as f:
         text = f.read()
@@ -472,8 +479,8 @@ def fix(workdir, i, corrections):
         raise SystemExit(f'{os.path.basename(path)} not changed. Use more words so each occurs once:\n  '
                          + '\n  '.join(errors))
     page = parse_page(text)
-    write_page(path, 'done', page.number, page.body.replace(TYPED, '').strip())
-    print(f'{os.path.basename(path)}: {n} fixes, done')
+    write_page(path, 'done', page.number if number is None else number, page.body.replace(TYPED, '').strip())
+    return n
 
 
 def pack(workdir, zip_path):
