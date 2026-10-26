@@ -399,6 +399,9 @@ def prepare(sources, workdir, resume=None):
         json.dump({'sources': [os.path.abspath(s) for s in sources], 'pages': len(rendered)}, f)
     print(f'{len(rendered)} pages in {workdir}: ' +
           ', '.join(f'{n} {s}' for s, n in counts.items() if n))
+    if counts['todo'] == len(rendered) and any(pdf_page is not None for _, pdf_page in rendered):
+        print('The PDF has no text layer, so every page is empty. For drafts to proofread, add one '
+              'on your computer first: python -m scanocr.transcribe ocr <scan.pdf> (Google Cloud Vision).')
     return len(rendered)
 
 

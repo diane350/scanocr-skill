@@ -4,6 +4,7 @@ import sys
 from . import __doc__ as DOC
 from .build import build
 from .pages import fix, pack, prepare, status, zoom
+from .vision import ocr
 
 
 def main(argv=None):
@@ -36,6 +37,15 @@ def main(argv=None):
     k.add_argument('workdir')
     k.add_argument('zip')
     k.set_defaults(run=lambda a: pack(a.workdir, a.zip))
+    o = sub.add_parser('ocr', help='Google Cloud Vision OCR: a copy of a scan with a text layer (run on your computer)')
+    o.add_argument('pdf')
+    o.add_argument('-o', '--output', help='default: <pdf>_ocr.pdf')
+    o.add_argument('--pages', help='e.g. 1-3,7 (1-based)')
+    o.add_argument('--lang', default='en', help='comma-separated language hints')
+    o.add_argument('--limit', type=int, default=900, help='stop before this many units a month')
+    o.add_argument('--dry-run', action='store_true', help='show what would be sent, send nothing')
+    o.add_argument('--force', action='store_true', help='go past --limit')
+    o.set_defaults(run=lambda a: ocr(a.pdf, a.output, a.pages, a.lang, a.limit, a.dry_run, a.force))
     a = ap.parse_args(argv)
     a.run(a)
 

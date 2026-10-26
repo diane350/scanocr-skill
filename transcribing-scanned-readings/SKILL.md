@@ -18,6 +18,11 @@ a chat `/mnt/user-data/outputs`; in the repository `local/out/`).
 
 1. `TOOL prepare <scan.pdf or page images> WORK` (add `--resume <progress.zip>` if the user
    gives one).
+   If every page comes out `todo`, the PDF has no text layer (ScanTailor removes it). Don't
+   type whole pages from the images. Ask the user to run, on their own computer,
+   `python -m scanocr.transcribe ocr <scan.pdf>` (Google Cloud Vision; needs `pip install
+   'scanocr[vision]'` and `gcloud auth application-default login`), then to attach the
+   `<scan>_ocr.pdf` it writes, and `prepare` that: the pages come out as drafts.
 2. **Each page, in order**: open `WORK/pages/page_NNNN.png` and `WORK/page_NNNN.md`
    together, then go on to the next.
    - A `draft` is pre-filled from the PDF's old text. Don't rewrite it: send only the
