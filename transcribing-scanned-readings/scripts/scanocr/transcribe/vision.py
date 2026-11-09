@@ -146,6 +146,38 @@ def find_font():
     return None
 
 
+def _line_sizes(words):
+    """(font size, baseline) for each word, the same for all the words of a line. A word's own
+    box is as tall as its tallest letter (\"on\" is half the height of \"the\"), so sizing words
+    by their boxes made the type of one line jump about and a line of short words look like
+    small print (a note) to ``prepare``. Words are on one line when their centres are level."""
+    order = sorted(range(len(words)), key=lambda k: (words[k][2] + words[k][4]) / 2)
+    out = [None] * len(words)
+    group = []
+
+    def close():
+        if not group:
+            return
+        heights = sorted(words[k][4] - words[k][2] for k in group)
+        top = min(heights[-1], 1.4 * heights[len(heights) // 2])     # a stray tall box doesn't count
+        bottoms = sorted(words[k][4] for k in group)
+        baseline = bottoms[len(bottoms) // 2] - top * 0.2
+        for k in group:
+            out[k] = (max(top * 0.85, 2), baseline)
+
+    for k in order:
+        cy = (words[k][2] + words[k][4]) / 2
+        if group:
+            ref = sum((words[j][2] + words[j][4]) / 2 for j in group) / len(group)
+            tall = max(words[j][4] - words[j][2] for j in group)
+            if abs(cy - ref) > 0.6 * tall:
+                close()
+                group = []
+        group.append(k)
+    close()
+    return out
+
+
 def add_text_layer(page, result, font):
     """The OCR words as invisible text, each word placed and stretched to its box. No space is
     added after a word the next one touches on the same line when that one is punctuation (or
@@ -157,9 +189,10 @@ def add_text_layer(page, result, font):
         x0, x1, y0, y1 = x0 * sx_page, x1 * sx_page, y0 * sy_page, y1 * sy_page
         if y1 > y0 and x1 > x0:
             words.append((text, x0, y0, x1, y1))
+    sizes = _line_sizes(words)
     for i, (text, x0, y0, x1, y1) in enumerate(words):
         h = y1 - y0
-        size = max(h * 0.85, 2)
+        size, base_y = sizes[i]
         natural = font.text_length(text, fontsize=size)
         stretch = min(max((x1 - x0) / natural, 0.3), 3) if natural > 0 else 1
         space = ' '
@@ -168,10 +201,13 @@ def add_text_layer(page, result, font):
             touches = abs((ny0 + ny1) / 2 - (y0 + y1) / 2) < h * 0.6 and 0 <= nx0 - x1 < h * NO_SPACE
             if touches and (not words[i + 1][0][:1].isalnum() or text[-1] in OPENING):
                 space = ''
-        base = pymupdf.Point(x0, y1 - h * 0.2)
+        base = pymupdf.Point(x0, base_y)
         writer = pymupdf.TextWriter(page.rect)
+        # stretched to the box in width, and squeezed in height by the same factor: a reader
+        # of the layer takes the type size from the area of the text matrix, which must stay
+        # the line's size, not change from word to word
         writer.append(base, text + space, font=font, fontsize=size)
-        writer.write_text(page, render_mode=3, morph=(base, pymupdf.Matrix(stretch, 1)))
+        writer.write_text(page, render_mode=3, morph=(base, pymupdf.Matrix(stretch, 1 / stretch)))
 
 
 def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=False, recognize=None, log=print):
