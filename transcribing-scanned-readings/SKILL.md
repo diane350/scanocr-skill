@@ -20,7 +20,7 @@ a chat `/mnt/user-data/outputs`; in the repository `local/out/`).
    gives one).
    If every page comes out `todo`, the PDF has no text layer (ScanTailor removes it). Don't
    type whole pages from the images. Ask the user to OCR it on their own computer: in the
-   scanocr-typeset app, File > OCR a scan… (or `python -m scanocr.transcribe ocr <scan.pdf>`;
+   scanocr app, File > OCR a scan… (or `python -m scanocr.transcribe ocr <scan.pdf>`;
    Google Cloud Vision; the app signs in to Google itself), then to attach the
    `<scan>_ocr.pdf` it writes, and `prepare` that: the pages come out as drafts.
 2. **Each page, in order**: open `WORK/pages/page_NNNN.png` and `WORK/page_NNNN.md`
