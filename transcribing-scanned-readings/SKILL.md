@@ -42,7 +42,9 @@ a chat `/mnt/user-data/outputs`; in the repository `local/out/`).
    on. Every image opened stays in the conversation, so with helper agents (Claude Code)
    give each about 10 pages and this skill.
 5. `TOOL build WORK OUT/<name>.md` (`--partial` for what's done so far). Fix what it
-   lists, build again, give the user the `.md`.
+   lists, build again. It ends with a notes check over the whole `.md`: every marker has
+   its note, every note its marker, every note starts `[^n]: `. Give the user the `.md`
+   only once it says `Notes check passed`; on `NOT READY`, fix the page files it names.
 
 ## A page file
 
@@ -60,14 +62,18 @@ A paragraph on one line, _italics_ as printed, a note marker[^12] where it is pr
 ```
 
 - Leave out running heads, page numbers and watermarks (the draft puts them in
-  `<!-- -->` comments, which build drops).
+  `<!-- -->` comments, which build drops). But keep a chapter's title on its first page
+  as `# Title`, with its note marker if it has one (`# The Title[^*]`); if the draft put
+  the title in a comment, write it out. A note with no marker is lost.
 - A paragraph or note running onto the next page: just stop, and start the next page with
   the rest. Build joins it (and a word hyphenated across the break). The rest of a note
   goes under the same label: `[^12]: ...continued text`. If the page also has its own
   note 12 (numbering restarts each page), write both as `[^12]`, the continuation first:
   build joins the first to the note before and gives the second the marker. If a
   paragraph goes on after a full stop at the page foot, start the next page with `+ `.
-- Note labels as printed (`[^4]`, `[^*]`); build makes repeats unique.
+- Note labels as printed (`[^4]`, `[^*]`); build makes repeats unique. Every note goes
+  after the text, as one line starting `[^4]: ` (with the colon); a superscript number
+  in the text is always a marker, `[^4]`, never a plain `4`.
 - Tables as Markdown tables. Headings as `#`/`##`.
 - Every diacritic exactly as printed (Kṛṣṇa, ʿulamā), curly quotes and dashes as printed,
   `(sic)`, misspellings and old spellings kept.
@@ -81,3 +87,4 @@ A paragraph on one line, _italics_ as printed, a note marker[^12] where it is pr
 - Misreads: `rn`→`m` (subaltemity), `rt`→`n` (imponant), `die` for `the`, `S` for `8` and
   `l` for `1` in numbers, `of1799` run together, `’` as `*`, `&` as `8c`/`St`, straight quotes.
 - Notes split or run together; a note's continuation at the top of a page.
+- A chapter title taken for a running head (in a comment), and its `*` read as `’`.

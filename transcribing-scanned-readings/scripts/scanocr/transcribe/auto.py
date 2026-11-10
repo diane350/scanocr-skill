@@ -68,11 +68,16 @@ quotations start "> ".
 - Italics must be _italic_ as printed; small capitals are lost.
 - Misreads: rn for m, rt for n, "die" for "the", S for 8 and l for 1 in numbers, words run \
 together, ' for ’, 8c for &.
-- Notes split or run together; a note continuing from the page before.
+- Notes split or run together; a note continuing from the page before. Every note at the foot \
+must start "[^12]: " (with the colon) and stay one line, after the text; a note left in the text \
+as "[^12]Its text" or broken into short lines is wrong.
+- A chapter's title on its first page must be kept, as "# Title", with its note marker if it \
+has one (# The Title[^*]). The draft may have put the title in a <!-- --> comment as if it \
+were a running head: then add it as a heading above the text.
 - Every diacritic exactly as printed (Kṛṣṇa, ʿulamā, Chaurī), curly quotes and dashes as printed, \
 misspellings and old spellings kept. Do not modernise or correct the author.
 Running heads, page numbers and watermarks are left out: they are in <!-- --> comments in the \
-draft, leave those alone."""
+draft, leave those alone (except a chapter title, above)."""
 
 
 class FatalError(SystemExit):
@@ -339,8 +344,12 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
     spent = cost(model, *totals)
     log(f'Used {totals[0]:,} tokens in, {totals[1]:,} out' + (f' (about ${spent:.2f})' if spent is not None else '') + '.')
     left = failed + empty
-    if not build(workdir, str(out), partial=bool(left)):
+    notes = build(workdir, str(out), partial=bool(left), log=log)
+    if notes is None:
         return None
     if left:
         log(f'The .md has gaps: pages {", ".join(map(str, sorted(left)))} are not in it.')
+    if notes:
+        log('Fix the notes listed above (in the page files, then run again: pages done are kept) '
+            'before you typeset the .md.')
     return Path(out)

@@ -25,3 +25,51 @@ def unique_label(label, n):
 def printed_label(label):
     """A note label as printed, without the -2 that made it unique."""
     return UNIQUE_RE.sub('', label)
+
+
+def title_level(label):
+    """Is a note with this label one a title or author carries (*, †), not a numbered one?"""
+    return not printed_label(label).isdigit()
+
+
+# a note written as a marker at the start of a line, without its colon: [^33]I am thinking...
+LOOSE_DEF_RE = re.compile(rf'^\[\^({NOTE_LABEL})\](?!:)\s*(\S.*)$')
+# a plain number after a word, which may be a marker that was never marked: comprehensive.35
+PLAIN_MARK_RE = re.compile(r'(?<=[^\s\d(\[{\-–/])(\d{1,3})(?=[\s,;:.)’”]|$)')
+
+
+def check_notes(md):
+    """What is wrong with the notes of a whole .md, as a list of problems (empty if all is
+    well): a marker with no note, a note with no marker (a title's note too: it belongs on
+    the title, # Title[^*]), a note defined twice, or a note written without its colon."""
+    defined, refs, loose, problems = [], [], [], []
+    for n, line in enumerate(md.splitlines(), 1):
+        if m := NOTE_DEF_RE.match(line):
+            defined.append(m.group(1))
+            refs += NOTE_REF_RE.findall(m.group(2))
+        elif m := LOOSE_DEF_RE.match(line.strip()):
+            loose.append(m.group(1))
+            problems.append(f'line {n}: [^{m.group(1)}] starts a line with no colon: a note written as '
+                            f'a marker? Write it [^{m.group(1)}]: ... with the notes')
+            refs += NOTE_REF_RE.findall(m.group(2))
+        else:
+            refs += NOTE_REF_RE.findall(line)
+    have, used = set(defined), set(refs) - set(loose)
+    for label in dict.fromkeys(defined):
+        if defined.count(label) > 1:
+            problems.append(f'note [^{label}] is defined {defined.count(label)} times')
+    body = '\n'.join(l for l in md.splitlines() if not NOTE_DEF_RE.match(l))
+    for label in dict.fromkeys(refs):
+        if label not in have and label not in loose:
+            problems.append(f'marker [^{label}] has no note')
+    for label in dict.fromkeys(defined):
+        if label not in used:
+            where = ''
+            if label.isdigit():
+                hits = [m for m in PLAIN_MARK_RE.finditer(body) if m.group(1) == label]
+                if hits:
+                    where = f' (a plain {label} in "…{body[max(0, hits[0].start() - 20):hits[0].end()]}" may be it)'
+            elif title_level(label):
+                where = f' (a title\'s note: write the title as # Title[^{label}])'
+            problems.append(f'note [^{label}] has no marker{where}')
+    return problems

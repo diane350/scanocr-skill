@@ -11,15 +11,25 @@ relabelled so every label is unique. HTML comments (<!-- -->) are left out.
 import re
 from collections import Counter
 
-from ..markup import NOTE_DEF_RE, NOTE_REF_RE, page_mark, unique_label
+from ..markup import LOOSE_DEF_RE, NOTE_DEF_RE, NOTE_REF_RE, check_notes, page_mark, unique_label
 from .pages import load_pages
 from .text import continues, hyphen_vocabulary, join, page_labels
 
 COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
 
 
-def blocks_of(body, vocab):
-    """[(kind, text)]: 'h' heading, 'p' paragraph, 'q' quotation, 't' table, 'n' note."""
+def _as_note(line):
+    """A note's line as '[^12]: text', also when written without its colon ([^12]text)."""
+    if m := LOOSE_DEF_RE.match(line.strip()):
+        return f'[^{m.group(1)}]: {m.group(2)}'
+    return line.strip()
+
+
+def blocks_of(body, vocab, said=None):
+    """[(kind, text)]: 'h' heading, 'p' paragraph, 'q' quotation, 't' table, 'n' note.
+    A line that starts with a marker is a note whose colon was left out ([^12]text: the text
+    never starts with a superscript). Notes come last on a page, so a paragraph after them
+    is the rest of the note before it, split by a blank line (said, in ``said``)."""
     out = []
     for chunk in re.split(r'\n\s*\n', COMMENT_RE.sub('', body).strip()):
         lines = [l.rstrip() for l in chunk.split('\n') if l.strip()]
@@ -30,12 +40,18 @@ def blocks_of(body, vocab):
             out += [('h', l.strip()) for l in lines]
         elif first.startswith('|'):
             out.append(('t', '\n'.join(l.strip() for l in lines)))
-        elif NOTE_DEF_RE.match(first):
+        elif NOTE_DEF_RE.match(first) or LOOSE_DEF_RE.match(first):
             for line in lines:                   # several notes may share a chunk
-                if NOTE_DEF_RE.match(line.lstrip()):
-                    out.append(('n', line.strip()))
+                if NOTE_DEF_RE.match(line.lstrip()) or LOOSE_DEF_RE.match(line.lstrip()):
+                    out.append(('n', _as_note(line)))
                 elif out and out[-1][0] == 'n':
                     out[-1] = ('n', join(out[-1][1], line.strip(), vocab))
+        elif out and out[-1][0] == 'n' and not first.startswith('>'):
+            label = NOTE_DEF_RE.match(out[-1][1]).group(1)
+            for line in lines:
+                out[-1] = ('n', join(out[-1][1], line.strip(), vocab))
+            if said is not None:
+                said.append(f'text after the notes was joined to note [^{label}]: "{first[:40]}…"')
         else:
             kind = 'q' if first.startswith('>') else 'p'
             text = ''
@@ -70,7 +86,9 @@ def compose(pages, labels):
             running = {}
             continue
         problems += [f'{name}: {p}' for p in page.problems]
-        blocks = blocks_of(page.body, vocab)
+        said = []
+        blocks = blocks_of(page.body, vocab, said)
+        problems += [f'{name}: {p}' for p in said]
         defs = [(m.group(1), m.group(2)) for k, t in blocks if k == 'n' for m in [NOTE_DEF_RE.match(t)]]
         refs = [r for k, t in blocks if k != 'n' for r in NOTE_REF_RE.findall(t)]
         rename, continued = {}, {}
@@ -128,17 +146,26 @@ def compose(pages, labels):
     return '\n\n'.join(out) + '\n', problems
 
 
-def build(workdir, out_path, partial=False):
-    """Write the .md; True if it was written. Lists problems to fix either way."""
+def build(workdir, out_path, partial=False, log=print):
+    """Write the .md. Returns None if it was not written (pages still to do), else what the
+    notes check found in the whole .md (see ``check_notes``): an empty list means every
+    marker has its note and every note its marker, so the .md can be handed over. What to
+    fix is listed either way, through ``log``."""
     pages = load_pages(workdir)
     todo = [i for i, p in enumerate(pages, 1) if p.status != 'done']
     if todo and not partial:
-        print(f'Not done yet: pages {", ".join(map(str, todo))}. Finish them, or build with --partial.')
-        return False
+        log(f'Not done yet: pages {", ".join(map(str, todo))}. Finish them, or build with --partial.')
+        return None
     md, problems = compose(pages, page_labels([p.number for p in pages]))
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(md)
-    print(f'Wrote {out_path}')
+    log(f'Wrote {out_path}')
     if problems:
-        print('To check:\n  ' + '\n  '.join(problems))
-    return True
+        log('To check:\n  ' + '\n  '.join(problems))
+    notes = check_notes(md)
+    if notes:
+        log('NOT READY: the notes check failed. Fix the page files and build again before handing '
+            'the .md over:\n  ' + '\n  '.join(notes))
+    else:
+        log('Notes check passed: every marker has its note and every note its marker.')
+    return notes

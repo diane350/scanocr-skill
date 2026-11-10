@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import pymupdf
 
 from ..markup import NOTE_DEF_RE
-from .text import LIGATURES, fix_old_text, join, number_value
+from .text import LIGATURES, STAR_RE, fix_old_text, join, number_value
 
 STATUS_RE = re.compile(r'^\s*#?\s*status:\s*(\S+)', re.I)
 PAGE_RE = re.compile(r'^\s*page:\s*(.*?)\s*$', re.I)
@@ -277,17 +277,26 @@ def _median(xs):
     return xs[len(xs) // 2]
 
 
-MARKER_RE = re.compile(r'(?<=[^\s\d(\[])(\d{1,3})(?=[\s,;:.]|$)')
+# a note marker printed as plain text after a word: masses.3, Studies*
+MARKER_RE = re.compile(r'(?<=[^\s\d(\[])(\d{1,3}|[*†‡§])(?=[\s,;:.)’”]|$)')
+# a line that starts a note: its label as a marker (a superscript, which no line of the text
+# itself starts with) or as plain text, with or without a space after it (33I am thinking)
+NOTE_START_RE = re.compile(r'^(?:\[\^([^\]\s]+)\]:?\s*|(\d{1,3}|[*†‡§])(?:\s+|(?=[A-Z‘“"\'(_])))')
 HEAD_ZONE, FOOT_ZONE = 0.12, 0.93       # running heads and folios sit above / below these (of the height)
+TITLE_ZONE = 0.35                       # a chapter's title sits above this (of the height)
+BIG = 1.2                               # type this much larger than the text's is a title or heading
+NOTE_GAP = 1.5                          # a gap of this many line spacings sets the notes apart from the text
 
 
 def _running_lines(lines, height, body_size):
-    """Which of the page's lines (box, ...) are running heads, folios and the like: at the
-    very top or bottom, and apart from the text by more than its line spacing (the last line
-    of a long note can sit as low as a folio)."""
+    """Which of the page's lines (box, size, ...) are running heads, folios and the like: at
+    the very top or bottom, and apart from the text by more than its line spacing (the last
+    line of a long note can sit as low as a folio). A line in larger type than the text is
+    not one: it is a chapter's title, which often carries a note (*)."""
     gap = 0.5 * body_size
     out = set()
-    heads = [k for k, (box, *_) in enumerate(lines) if box[3] < HEAD_ZONE * height]
+    heads = [k for k, (box, size, *_) in enumerate(lines)
+             if box[3] < HEAD_ZONE * height and size <= BIG * body_size]
     for k in reversed(heads):                      # upwards from the text
         if k + 1 in out or k + 1 == len(lines) or lines[k + 1][0][1] - lines[k][0][3] > gap:
             out.add(k)
@@ -298,11 +307,58 @@ def _running_lines(lines, height, body_size):
     return out
 
 
+def _next_label(label):
+    return str(int(label) + 1) if label and label.isdigit() else None
+
+
+def _paragraphs(kept, height, body_size):
+    """The kept lines (box, size, note, text) as paragraphs, headings ('# ...') and notes
+    ('[^12]: ...'). The notes are found from their labels, not only from their smaller type
+    (an OCR layer's type sizes are rough): a line starting with a superscript number, or with
+    a number after a gap below the text, starts them, and every line from there on is a note
+    or the rest of one. In the notes a new note starts at the next number, or a superscript."""
+    main = [b for b, _, n, _ in kept if not n] or [b for b, _, _, _ in kept]
+    left, right = _median([b[0] for b in main]), _median([b[2] for b in main])
+    steps = [b[3] - a[3] for (a, *_), (b, *_) in zip(kept, kept[1:]) if 0 < b[3] - a[3] < 3 * body_size]
+    spacing = _median(steps) if steps else 1.2 * body_size
+    paras, prev = [], None
+    in_notes, sure, last = False, False, None      # sure: the notes were found by more than their size
+    for box, size, note, text in kept:
+        start = NOTE_START_RE.match(text)
+        label = start and (start.group(1) or start.group(2))
+        marker = bool(start and start.group(1))
+        gap = prev is not None and box[1] - prev[1][3] > NOTE_GAP * spacing - size
+        if in_notes and not sure and not note and not marker:
+            in_notes = False                       # small type that was not notes after all
+        if start and in_notes:
+            opens = marker or label == _next_label(last) or not label.isdigit()
+        elif start:
+            opens = marker or note or (gap and box[1] > TITLE_ZONE * height)
+            sure = marker or gap
+        else:
+            opens = False
+        if opens:
+            in_notes, last = True, label
+            text = f'[^{label}]: ' + text[start.end():]
+        big = size > BIG * body_size and not in_notes
+        if big:
+            text = ('# ' if box[1] < TITLE_ZONE * height else '## ') + text
+        new = (prev is None or opens or (in_notes != prev[0]) or big != prev[2]
+               or (not in_notes and box[0] > left + 0.5 * body_size)
+               or (not in_notes and prev[1][2] < right - 2 * body_size and re.search(r'[.:?!’”]_?$', paras[-1])))
+        if new:
+            paras.append(text)
+        else:
+            paras[-1] = join(paras[-1], text)
+        prev = (in_notes, box, big)
+    return paras
+
+
 def draft(pdf_page):
     """A draft of the page from the PDF's old text layer, or None if it has none.
-    Paragraphs come from indents and short lines, italics from the type styles,
-    notes from the smaller type, note markers from the notes found; running heads and
-    folios become comments, which build leaves out."""
+    Paragraphs come from indents and short lines, italics from the type styles, headings
+    from larger type, notes from their labels and smaller type, note markers from the
+    notes found; running heads and folios become comments, which build leaves out."""
     rows = []
     for l in _text_layer_lines(pdf_page):
         spans = [s for s in l['spans'] if s['text']]
@@ -322,45 +378,33 @@ def draft(pdf_page):
     body_size = _median([s['size'] for _, sp in merged for s in sp for _ in s['text']])
     lines = []
     for box, spans in merged:
-        note = _median([s['size'] for s in spans]) < 0.88 * body_size
+        size = _median([s['size'] for s in spans for _ in s['text'].strip()] or [s['size'] for s in spans])
+        note = size < 0.88 * body_size
         text = _line_text(spans, note).rstrip()
-        text = fix_old_text(text[:-1] + '-' if text.endswith('\xad') else text).strip()
+        text = fix_old_text(text[:-1] + '-' if text.endswith('\xad') else text, star=False).strip()
         if text:
-            lines.append((box, note, text))
+            lines.append((box, size, note, text))
     height = pdf_page.rect.height
     running = _running_lines(lines, height, body_size)
     numbers, head, foot, kept = [], [], [], []
-    for k, (box, note, text) in enumerate(lines):
+    for k, (box, size, note, text) in enumerate(lines):
         if k not in running:
-            kept.append((box, note, text))
+            kept.append((box, size, note, text))
             continue
         words = text.split()
         for w in dict.fromkeys((words[0], words[-1])):    # the first and last word, once each
             w = w.strip('_')
             if w.isdigit() or (number_value(w) and len(words) <= 2):
                 numbers.append(w)
-        (head if box[3] < HEAD_ZONE * height else foot).append(text)
+        (head if box[3] < HEAD_ZONE * height else foot).append(STAR_RE.sub('’', text))
     if not kept:
         return None
-    main = [b for b, n, _ in kept if not n] or [b for b, _, _ in kept]
-    left, right = _median([b[0] for b in main]), _median([b[2] for b in main])
-    paras, prev = [], None
-    for box, note, text in kept:
-        indent = box[0] > left + 0.5 * body_size
-        starts_note = note and re.match(r'^(\d+|[*†‡§])\s+', text)
-        if starts_note:
-            text = f'[^{starts_note.group(1)}]: ' + text[starts_note.end():]
-        new = (prev is None or note != prev[0] or starts_note or (indent and not note)
-               or (prev[1][2] < right - 2 * body_size and re.search(r'[.:?!’”]_?$', paras[-1])))
-        if new:
-            paras.append(text)
-        else:
-            paras[-1] = join(paras[-1], text)
-        prev = (note, box)
-    notes = [p for p in paras if NOTE_DEF_RE.match(p)]
+    paras = _paragraphs(kept, height, body_size)
+    notes = [STAR_RE.sub('’', p) for p in paras if NOTE_DEF_RE.match(p)]
     labels = {NOTE_DEF_RE.match(n).group(1) for n in notes}
-    body_paras = [MARKER_RE.sub(lambda m: f'[^{m.group(1)}]' if m.group(1) in labels else m.group(1), p)
-                  for p in paras if p not in notes]
+    body_paras = [STAR_RE.sub('’', MARKER_RE.sub(
+                      lambda m: f'[^{m.group(1)}]' if m.group(1) in labels else m.group(1), p))
+                  for p in paras if not NOTE_DEF_RE.match(p)]
     parts = [f'<!-- {e} -->' for e in head] + body_paras + notes + [f'<!-- {e} -->' for e in foot]
     if len(set(numbers)) > 1:
         parts.insert(0, f'<!-- page numbers printed: {", ".join(dict.fromkeys(numbers))} -->')

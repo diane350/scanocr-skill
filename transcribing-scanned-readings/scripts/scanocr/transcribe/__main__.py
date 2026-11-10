@@ -34,7 +34,7 @@ def main(argv=None):
     b.add_argument('workdir')
     b.add_argument('out')
     b.add_argument('--partial', action='store_true', help='build with pages still to do')
-    b.set_defaults(run=lambda a: build(a.workdir, a.out, a.partial) or sys.exit(1))
+    b.set_defaults(run=lambda a: build(a.workdir, a.out, a.partial) == [] or sys.exit(1))
     k = sub.add_parser('pack', help='save the page files in one small file for a later session')
     k.add_argument('workdir')
     k.add_argument('zip')

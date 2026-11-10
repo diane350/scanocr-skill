@@ -18,9 +18,10 @@ ROMAN_MAX = 400             # front matter ends well before; MIX or DIV in a run
 LIGATURES = str.maketrans({'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st'})
 WATERMARK_RE = re.compile(r'(downloaded\s+(by|from)\b.*|this content downloaded from.*|'
                           r'all use subject to\s+https?://\S+.*)', re.I)
-# common misreads in old text layers: down* (’), 8c and St (&)
-MISREADS = [(re.compile(r'(?<=[a-z])\*(?=[\s,.;:)]|$)', re.M), '’'),
-            (re.compile(r'(?<=\s)(?:8c|St)(?=\s+[A-Z])'), '&')]
+# common misreads in old text layers: down* (’), 8c and St (&). A * after a word can also be
+# a note marker (a title's acknowledgements note), so the draft decides that one itself.
+STAR_RE = re.compile(r'(?<=[a-z])\*(?=[\s,.;:)]|$)', re.M)
+MISREADS = [(re.compile(r'(?<=\s)(?:8c|St)(?=\s+[A-Z])'), '&')]
 
 
 def goes_on(text):
@@ -60,15 +61,16 @@ def continues(prev, nxt):
     return not TERMINAL_RE.search(prev.rstrip()) and goes_on(nxt)
 
 
-def fix_old_text(text):
+def fix_old_text(text, star=True):
     """An old text layer made readable: watermark lines out, ligatures and soft
-    hyphens resolved, common misreads fixed."""
+    hyphens resolved, common misreads fixed. ``star``: down* read as down’ too (see
+    STAR_RE)."""
     text = text.translate(LIGATURES)
     text = re.sub('­[ \t]*\n', '-\n', text).replace('­', '')
     text = '\n'.join(l for l in text.split('\n') if not WATERMARK_RE.search(l))
     for rx, rep in MISREADS:
         text = rx.sub(rep, text)
-    return text
+    return STAR_RE.sub('’', text) if star else text
 
 
 def number_value(number):
