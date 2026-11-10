@@ -1,6 +1,7 @@
 """The Markdown of a transcription, shared by build (which writes it) and the typesetter
 (which reads it): {47} page marks and [^12] notes."""
 import re
+import unicodedata
 
 # where a printed page starts: {47}, {xii}, {XII}
 PAGE_MARK = r'\{(?:\d+|[ivxlcdm]+|[IVXLCDM]+)\}'
@@ -11,6 +12,28 @@ NOTE_REF = rf'\[\^{NOTE_LABEL}\](?!:)'
 NOTE_REF_RE = re.compile(rf'\[\^({NOTE_LABEL})\](?!:)')
 NOTE_DEF_RE = re.compile(rf'^\[\^({NOTE_LABEL})\]:\s*(.*)$')
 UNIQUE_RE = re.compile(r'-\d+$')
+
+
+# marks that print nothing and only get in the way: soft hyphen, zero-width space and joiners
+# around Latin text, the byte-order mark
+UNSEEN_RE = re.compile('[\u00ad\u200b\u2060\ufeff]')
+
+
+def clean(md):
+    """A .md's text as the tools read it: Unix line ends, accents joined to their letters
+    (a + combining macron is ā, which a font can set), nothing unseen left in the words."""
+    md = md.replace('\r\n', '\n').replace('\r', '\n')
+    return unicodedata.normalize('NFC', UNSEEN_RE.sub('', md))
+
+
+def read_md(path):
+    """The text of a transcription file, cleaned.  ValueError, in plain words, for a file
+    that is not text (a PDF picked by mistake)."""
+    try:
+        with open(path, encoding='utf-8-sig') as f:
+            return clean(f.read())
+    except UnicodeDecodeError:
+        raise ValueError(f'{path} is not a text file (a transcription is a .md saved as UTF-8)') from None
 
 
 def page_mark(label):
