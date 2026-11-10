@@ -43,3 +43,6 @@ when SKILL.md changes. The description stays under 200 characters (claude.ai's l
 | Verse and lists run into one paragraph | Every block was joined to one line | Lines ending `\\` keep their breaks; list items stay one a line (`build.blocks_of`) |
 | A plate between pages shifted every page number after it | No way to say a page is not counted | `page: -` (`text.page_labels`); build also lists page numbers that are out of step |
 | The year in a running head taken for the page number | First number found at the top | The numbers of all pages vote: the one that runs in step wins (`pages._settle_numbers`) |
+| Bold run-in headings came out plain | Drafts dropped bold; the typesetter had no bold | Drafts write `**bold**` (but not on a line set bold throughout, a heading) (`pages._line_text`); the typesetter sets it bold |
+| A table's header row set plain | Header was guessed from capitals | The separator line (`\|---\|`) under the first row makes it the header, set bold in a grid of rules; no separator line: a plain list such as abbreviations (`journal.parse`, `Typesetter.table`) |
+| A heading at the foot of a page joined to the next page's paragraph | It has no closing punctuation, like a paragraph that runs on | Build lists any such page end that looks like a heading (short, capital first) to check (`build._heading_like`) |

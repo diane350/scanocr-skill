@@ -267,7 +267,11 @@ def typed_text(pdf_page):
 
 
 def _line_text(spans, note):
-    """A line's text with _italics_ and note markers ([^12]) from the span styles."""
+    """A line's text with _italics_, **bold** and note markers ([^12]) from the span styles.
+    A line set bold throughout is a heading, which gets no ** (it becomes # or ## by its size,
+    or the proofreader makes it one); a bold run-in heading keeps them."""
+    words = [sp for sp in spans if sp['text'].strip()]
+    all_bold = bool(words) and all(sp['flags'] & 16 for sp in words)
     out = []
     for k, sp in enumerate(spans):
         t = sp['text']
@@ -277,12 +281,15 @@ def _line_text(spans, note):
         small = sp['size'] < 0.78 * max(s['size'] for s in spans)
         if small and re.fullmatch(r'\d{1,3}(?:\s*,\s*\d{1,3})*', t.strip()) and (k or not note):
             out.append(''.join(f'[^{n.strip()}]' for n in t.split(',')))      # 2,3: two markers
-        elif sp['flags'] & 2:
-            lead, core, tail = re.match(r'(\s*)(.*?)(\s*)$', t).groups()
-            out.append(f'{lead}_{core}_{tail}')
         else:
-            out.append(t)
+            lead, core, tail = re.match(r'(\s*)(.*?)(\s*)$', t).groups()
+            if sp['flags'] & 2:
+                core = f'_{core}_'
+            if sp['flags'] & 16 and not all_bold:
+                core = f'**{core}**'
+            out.append(f'{lead}{core}{tail}')
     text = ''.join(out)
+    text = re.sub(r'\*\*(\s*)\*\*', r'\1', text)     # **one** **two** -> **one two**
     return re.sub(r'_(\s*)_', r'\1', text)          # _one_ _two_ -> _one two_
 
 

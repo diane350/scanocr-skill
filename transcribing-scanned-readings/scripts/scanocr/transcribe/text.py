@@ -8,7 +8,7 @@ from ..markup import NOTE_REF
 # a line-end hyphen after one of these is part of the word (self-conscious, non-official)
 # (not ex-: a line breaks ex-ample, ex-pect far more often than it prints ex-officio)
 PREFIXES = ('self', 'non', 'quasi', 'well', 'half', 'all')
-TERMINAL_RE = re.compile(rf'[.!?:।॥۔؟]["”’\')\]_]*(?:{NOTE_REF})*$')
+TERMINAL_RE = re.compile(rf'[.!?:।॥۔؟]["”’\')\]_*]*(?:{NOTE_REF})*$')
 # a word's letters, with combining accents (r̥, m̐) and apostrophes
 WORD_CHAR = r"[\ẁ-ͯ᪰-᫿᷀-᷿⃐-⃿︠-︯’']"
 WORD_RE = re.compile(rf"{WORD_CHAR}+")

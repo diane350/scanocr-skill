@@ -80,8 +80,11 @@ A paragraph on one line, _italics_ as printed, a note marker[^12] where it is pr
 - Note labels as printed (`[^4]`, `[^*]`); build makes repeats unique. Every note goes
   after the text, as one line starting `[^4]: ` (with the colon); a superscript number
   in the text is always a marker, `[^4]`, never a plain `4`.
-- Tables as Markdown tables. Headings as `#`/`##`. A list: one item a line (`- ...`,
-  `1. ...`, `(a) ...`). Verse: every line of the quotation starts `> ` and ends with `\`
+- Tables as Markdown tables, with the `|---|` line under a header row (it makes that row
+  the header, set bold in a ruled grid). A list set out in two columns, such as
+  abbreviations, also as `| _BC:_ | Board's Collections |` rows, but with no `|---|` line.
+  Headings as `#`/`##`. Bold as `**bold**` (a run-in heading too: `**Land.** The ...`).
+  A list: one item a line (`- ...`, `1. ...`, `(a) ...`). Verse: every line of the quotation starts `> ` and ends with `\`
   (but the last), which keeps the line breaks.
 - `page: -` for a page that has no number and is not counted (a plate between pages);
   blank for one that is counted (a chapter's first page).

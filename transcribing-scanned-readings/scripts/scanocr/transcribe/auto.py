@@ -83,7 +83,9 @@ were a running head: then add it as a heading above the text.
 - Endnotes: where the notes are printed at the end of the chapter or book, the markers stay in \
 the text as printed and each note on the notes pages starts "[^4]: ". A number at the start of a \
 line of body text ("9 July") is not a note.
-- A list is one item a line ("- ...", "1. ...", "(a) ..."). Verse: every line starts "> " and \
+- Bold as printed is **bold** (a bold run-in heading too: "**Land.** The ..."). A table keeps \
+its "|---|" line under a header row; a two-column list such as abbreviations has no "|---|" line. \
+A list is one item a line ("- ...", "1. ...", "(a) ..."). Verse: every line starts "> " and \
 ends with a backslash, but the last. A plain number is not a marker ("No. 3", "3.5", "1857-58").
 - A note that goes on from the page before is labelled "[^?]: " when the draft can't tell whose \
 it is: give it that note's number if the image shows it, or leave it.

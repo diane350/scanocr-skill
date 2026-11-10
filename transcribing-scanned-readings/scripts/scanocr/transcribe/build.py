@@ -11,7 +11,7 @@ relabelled so every label is unique. HTML comments (<!-- -->) are left out.
 import re
 from collections import Counter
 
-from ..markup import LOOSE_DEF_RE, NOTE_DEF_RE, NOTE_REF_RE, check_notes, page_mark, unique_label
+from ..markup import LOOSE_DEF_RE, NOTE_DEF_RE, NOTE_REF_RE, PAGE_MARK_RE, check_notes, page_mark, unique_label
 from .pages import load_pages
 from .text import continues, hyphen_vocabulary, join, number_value, page_labels
 
@@ -81,6 +81,17 @@ def join_marked(left, right, mark, vocab):
     if end < 0:
         return f'{joined} {mark}'
     return f'{joined[:end]} {mark}{joined[end:]}'
+
+
+def _plain(text):
+    return ' '.join(NOTE_REF_RE.sub('', PAGE_MARK_RE.sub('', text)).replace('*', '').replace('_', '').split())
+
+
+def _heading_like(text):
+    """A paragraph that may be a heading build cannot tell from text: short, not ended, and
+    starting with a capital or a number (II, 3. The Revolt)."""
+    words = _plain(text).split()
+    return 0 < len(words) <= 8 and (words[0][0].isupper() or words[0][0].isdigit())
 
 
 def compose(pages, labels):
@@ -156,6 +167,10 @@ def compose(pages, labels):
                 last[1] += '\n' + (f'{mark} ' if mark else '') + text
             elif (first and last and last[0] == kind and kind in 'pq'
                     and (forced or continues(last[1], text))):
+                if not forced and kind == 'p' and _heading_like(last[1]):
+                    problems.append(f'{name}: the page before ends with "{_plain(last[1])}", joined to this page as '
+                                    f'one paragraph. If it is a heading, write it as ## {_plain(last[1])}; if it '
+                                    f'does run on, start this page with + to keep it joined without this note.')
                 last[1] = join_marked(last[1], text, mark, vocab) if mark else join(last[1], text, vocab)
             elif first and mark and kind in 'ht':        # a heading or table keeps its own line
                 items += [['p', mark], [kind, text]]
