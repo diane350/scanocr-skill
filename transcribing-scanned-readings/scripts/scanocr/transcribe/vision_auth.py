@@ -17,6 +17,20 @@ CONFIG = Path(os.environ.get('APPDATA', Path.home()) if sys.platform == 'win32' 
               os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'scanocr'
 TOKEN = CONFIG / 'google-login.json'
 CLIENT = CONFIG / 'google-oauth-client.json'
+SIGN_IN_WAIT = 300          # seconds the app waits for the browser sign-in
+
+
+def write_private(path, text):
+    """Write a key or login so that only this user can read it, from the moment the file
+    exists (written and then chmod-ed, it was readable by others in between)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    part = path.with_name(path.name + '.part')
+    part.unlink(missing_ok=True)
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(text)
+    os.replace(part, path)
 
 
 def gcloud_login_file():
@@ -49,9 +63,7 @@ def save_client(path):
     if not isinstance(data.get('installed'), dict) or 'client_id' not in data['installed']:
         raise SystemExit(f'{path} is not a Desktop app OAuth client: in Google Cloud Credentials, '
                          'create an OAuth client ID of type "Desktop app" and download its JSON.')
-    CONFIG.mkdir(parents=True, exist_ok=True)
-    CLIENT.write_text(json.dumps(data), encoding='utf-8')
-    os.chmod(CLIENT, 0o600)
+    write_private(CLIENT, json.dumps(data))
 
 
 def sign_in(client=None):
@@ -63,16 +75,17 @@ def sign_in(client=None):
     if not has_client():
         raise SystemExit('Choose the OAuth client JSON from your Google Cloud project first.')
     flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT), SCOPES)
-    creds = flow.run_local_server(port=0, prompt='consent',
-                                  authorization_prompt_message='Opening your browser to sign in to Google...',
-                                  success_message='Signed in. You can close this tab and return to the app.')
-    CONFIG.mkdir(parents=True, exist_ok=True)
+    try:        # without a time limit a closed browser tab left the app waiting for good
+        creds = flow.run_local_server(port=0, prompt='consent', timeout_seconds=SIGN_IN_WAIT,
+                                      authorization_prompt_message='Opening your browser to sign in to Google...',
+                                      success_message='Signed in. You can close this tab and return to the app.')
+    except Exception as e:
+        raise SystemExit(f'The sign-in was not finished in the browser ({type(e).__name__}: {e}). Try again.')
     data = json.loads(creds.to_json())
     project = json.loads(CLIENT.read_text(encoding='utf-8'))['installed'].get('project_id')
     if project:
         data['quota_project_id'] = project
-    TOKEN.write_text(json.dumps(data), encoding='utf-8')
-    os.chmod(TOKEN, 0o600)
+    write_private(TOKEN, json.dumps(data))
 
 
 def sign_out():
@@ -95,5 +108,5 @@ def credentials():
                              'consent screen is in Testing). Sign in again.')
         data = json.loads(creds.to_json())
         data['quota_project_id'] = creds.quota_project_id
-        TOKEN.write_text(json.dumps(data), encoding='utf-8')
+        write_private(TOKEN, json.dumps(data))
     return creds

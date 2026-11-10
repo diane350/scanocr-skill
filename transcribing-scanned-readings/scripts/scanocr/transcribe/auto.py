@@ -24,7 +24,7 @@ import pymupdf
 from .build import build
 from .pages import TYPED, apply_fixes, load_pages, page_path, parse_page, prepare
 from .text import number_value
-from .vision_auth import CONFIG
+from .vision_auth import CONFIG, write_private
 
 DEFAULT_MODEL = 'claude-sonnet-5-5'
 # $ per million tokens in / out at list prices when written (Gemini: the paid tier; its free tier
@@ -36,7 +36,10 @@ MODELS = {'claude-sonnet-5-5': (2, 10), 'claude-opus-5-5': (4, 20), 'claude-haik
 PROVIDERS = {'claude': ('anthropic-key', ('ANTHROPIC_API_KEY',), 'an Anthropic API key (console.anthropic.com)'),
              'gemini': ('gemini-key', ('GEMINI_API_KEY', 'GOOGLE_API_KEY'), 'a Gemini API key (aistudio.google.com)')}
 PARALLEL = 4
-MAX_TOKENS = 8000
+# Room for the reply and, on Claude, the thinking before it (billed and counted as output): at
+# 8,000 a dense page's corrections could be cut off half way.
+MAX_TOKENS = 16000
+SAME_FAULT = 5                    # pages failing on a fault of the service, none done: stop the run
 # What a page image costs: Claude reads 28 x 28 px patches (width/28 x height/28 tokens) and scales an
 # image down to at most 2,576 px on the long edge and 4,784 tokens (Anthropic's docs for models from 4.7 on);
 # Gemini 768 px tiles at 258 tokens each. A page is scaled to fit before it is sent, so a big scan costs
@@ -46,7 +49,10 @@ MAX_TOKENS_PER_IMAGE = 4784
 MAX_PIXELS = MAX_TOKENS_PER_IMAGE * 28 * 28
 JPEG_OVER = 7_000_000             # bytes of PNG above which the page goes as a JPEG
 TEXT_CHARS_PER_TOKEN = 3.5
-EXPECTED_OUT = 400                # corrections for one page, tokens
+# Output tokens for one page, for the estimate: the corrections are about 400; Claude also
+# thinks first, which is billed as output (one real 42-page run cost about 3,000 a page, three
+# times the old estimate).
+EXPECTED_OUT = {'claude': 3000, 'gemini': 400}
 
 SYSTEM = """\
 You proofread one page of a scanned academic reading. You get the page image and a draft of the \
@@ -91,6 +97,16 @@ class FatalError(SystemExit):
     """A problem every page would meet (a refused key, an unknown model): the run stops."""
 
 
+class PageError(SystemExit):
+    """One page's request failed (the service, the network, a reply that is no use): the page
+    stays a draft. ``used``: the (tokens in, tokens out) it cost all the same; ``fault``: it
+    was the service or network, not the page."""
+
+    def __init__(self, message, used=(0, 0), fault=False):
+        super().__init__(message)
+        self.used, self.fault = used, fault
+
+
 def provider(model):
     return 'gemini' if model.startswith('gemini') else 'claude'
 
@@ -99,18 +115,28 @@ def key_file(model):
     return CONFIG / PROVIDERS[provider(model)][0]
 
 
-def api_key(model=DEFAULT_MODEL):
-    """The saved key (or the environment's) for the company whose model this is; '' if none."""
+def env_key(model=DEFAULT_MODEL):
+    """The key the environment holds for this model's company; '' if none."""
     for name in PROVIDERS[provider(model)][1]:
         if os.environ.get(name, '').strip():
             return os.environ[name].strip()
-    return key_file(model).read_text(encoding='utf-8').strip() if key_file(model).is_file() else ''
+    return ''
+
+
+def api_key(model=DEFAULT_MODEL):
+    """The saved key (or the environment's) for the company whose model this is; '' if none."""
+    if env_key(model):
+        return env_key(model)
+    try:
+        return key_file(model).read_text(encoding='utf-8').strip()
+    except (OSError, UnicodeDecodeError):
+        return ''
 
 
 def save_key(key, model=DEFAULT_MODEL):
-    CONFIG.mkdir(parents=True, exist_ok=True)
-    key_file(model).write_text(key.strip(), encoding='utf-8')
-    os.chmod(key_file(model), 0o600)
+    """Keep the key in this user's config folder, readable by this user only. (It is plain
+    text: anyone who can read your files as you can read it.)"""
+    write_private(key_file(model), key.strip())
 
 
 def forget_key(model=DEFAULT_MODEL):
@@ -152,10 +178,18 @@ def gemini_ask(key):
                 raise FatalError('The Gemini API key was refused: check it at aistudio.google.com.')
             if e.code == 404:
                 raise FatalError(f'Google does not know a model called {model}.')
+            if e.code == 429:
+                raise PageError(f'Gemini is over its rate or free-tier limit: {e}', fault=True)
             raise FatalError(f'Gemini refused the request: {e}')
+        except errors.APIError as e:                    # its servers: this page, not the run
+            raise PageError(f'Gemini could not answer: {e}', fault=True)
         u = r.usage_metadata
-        text = r.text or ''
-        return text, u.prompt_token_count or 0, (u.candidates_token_count or 0) + (u.thoughts_token_count or 0)
+        used = (u.prompt_token_count or 0, (u.candidates_token_count or 0) + (u.thoughts_token_count or 0))
+        try:
+            text = r.text or ''
+        except ValueError:                              # a blocked reply has no text to read
+            text = ''
+        return text, *used
     return ask
 
 
@@ -176,8 +210,21 @@ def anthropic_ask(key):
             raise FatalError(f'The API key may not use {model}: {e.message}')
         except anthropic.NotFoundError:
             raise FatalError(f'Anthropic does not know a model called {model}.')
+        except anthropic.RateLimitError:
+            raise PageError('Anthropic is over its rate limit for this key (tried 6 times)', fault=True)
+        except anthropic.APIStatusError as e:
+            raise PageError(f'Anthropic could not answer (error {e.status_code}): {e.message}',
+                            fault=e.status_code >= 500)
+        except anthropic.APIConnectionError as e:
+            raise PageError(f'no connection to Anthropic: {e}', fault=True)
+        used = (r.usage.input_tokens, r.usage.output_tokens)
+        # a reply is the corrections only when the model finished it
+        if r.stop_reason == 'refusal':
+            raise PageError('the model declined this page', used)
+        if r.stop_reason == 'max_tokens':
+            raise PageError('the reply was cut off before its end', used)
         text = ''.join(b.text for b in r.content if b.type == 'text')
-        return text, r.usage.input_tokens, r.usage.output_tokens
+        return text, *used
     return ask
 
 
@@ -237,7 +284,7 @@ def estimate(workdir, model=DEFAULT_MODEL):
         if _sends_image(page):
             pix = pymupdf.Pixmap(os.path.join(workdir, 'pages', f'page_{i:04d}.png'))
             tokens_in += image_tokens(model, pix.width, pix.height)
-    return len(drafts), tokens_in, len(drafts) * EXPECTED_OUT
+    return len(drafts), tokens_in, len(drafts) * EXPECTED_OUT[provider(model)]
 
 
 def cost(model, tokens_in, tokens_out):
@@ -274,8 +321,14 @@ def proofread_page(ask, model, workdir, i, used=None):
     messages = [{'role': 'user', 'content': content}]
     used = [0, 0, 0] if used is None else used
     for attempt in range(2):
-        reply, tin, tout = ask(model, SYSTEM, messages)
+        try:
+            reply, tin, tout = ask(model, SYSTEM, messages)
+        except PageError as e:
+            used[0], used[1], used[2] = used[0] + e.used[0], used[1] + e.used[1], used[2] + 1
+            raise
         used[0], used[1], used[2] = used[0] + tin, used[1] + tout, used[2] + 1
+        if not reply.strip():       # nothing came back (blocked, or all thinking): not "no corrections"
+            raise PageError('the model sent an empty reply')
         number, corrections = parse_reply(reply)
         try:
             apply_fixes(workdir, i, corrections, number)
@@ -287,10 +340,15 @@ def proofread_page(ask, model, workdir, i, used=None):
                          {'role': 'user', 'content': f'{e}\nReply again with corrected corrections only.'}]
 
 
-def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask=None):
+def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask=None, stop=None):
     """Prepare ``pdf`` (made by ``ocr``), proofread its drafts with the model, and write the
-    .md to ``out``; returns the .md's path, or None for a check or when nothing could be built."""
-    pdf = Path(pdf)
+    .md to ``out``; returns the .md's path, or None for a check, a stopped run, or when nothing
+    could be built. ``stop``: a threading.Event; once set, no further page is sent (pages done
+    are kept, and a rerun carries on)."""
+    pdf, out = Path(pdf), Path(out)
+    if out.suffix.lower() == '.pdf' or (out.exists() and pdf.exists() and out.samefile(pdf)):
+        raise SystemExit(f'The transcription is saved as a .md, not over a PDF ({out.name}): '
+                         'give it a name ending .md.')
     workdir = str(workdir or pdf.with_name(pdf.stem + '_pages'))
     prepare(str(pdf), workdir)                    # keeps page files already there: a rerun carries on
     say, logfile = log, os.path.join(workdir, 'transcribe-log.txt')
@@ -320,12 +378,13 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
     log(estimate_line)
     totals, failed, done, lock = [0, 0], [], [0], threading.Lock()
 
-    stop, fatal = threading.Event(), []
+    stop, fatal, faults = stop or threading.Event(), [], [0]
 
     def one(i):
         if stop.is_set():
             return
         used = [0, 0, 0]
+        fault = False
         try:
             proofread_page(ask, model, workdir, i, used)
             problem = None
@@ -333,9 +392,17 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
             stop.set()
             fatal.append(str(e))
             return
+        except PageError as e:
+            problem, fault = ' '.join(str(e).split()[:24]), e.fault
         except SystemExit as e:
             problem = ' '.join(str(e).split()[:14])
+        except Exception as e:      # the network, the client library: this page, not the run
+            problem, fault = f'{type(e).__name__}: {" ".join(str(e).split()[:20])}', True
         with lock:
+            faults[0] = faults[0] + 1 if fault else 0
+            if faults[0] >= SAME_FAULT and done[0] == len(failed):      # nothing has got through
+                stop.set()
+                fatal.append(f'Stopped after {faults[0]} pages failed the same way: {problem}')
             totals[0] += used[0]
             totals[1] += used[1]
             done[0] += 1
@@ -348,6 +415,9 @@ def run(pdf, out, workdir=None, model=DEFAULT_MODEL, check=False, log=print, ask
         list(pool.map(one, drafts))
     if fatal:
         raise SystemExit(fatal[0])
+    if stop.is_set():
+        log(f'Stopped: {done[0] - len(failed)} of {len(drafts)} pages done and kept. Run again to carry on.')
+        return None
     spent = cost(model, *totals)
     log(f'Used {totals[0]:,} tokens in, {totals[1]:,} out' + (f' (about ${spent:.2f})' if spent is not None else '') + '.')
     left = failed + empty

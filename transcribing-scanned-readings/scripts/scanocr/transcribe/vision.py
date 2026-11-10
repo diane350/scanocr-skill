@@ -11,8 +11,10 @@ login``, or the app's own (``--sign-in client.json``, see vision_auth). No key f
 Each page's result is kept in ``<out>_vision_cache/``, so a re-run costs nothing, and a
 monthly count of pages sent (~/.local/state/scanocr/usage.json) stops the run before ``--limit`` (free tier: 1,000 units a month; check Google's current pricing).
 """
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,13 +39,18 @@ ATTEMPTS = 4
 
 def parse_pages(spec, n):
     """0-based page numbers for a spec like '1-3,7' (1-based); all pages if no spec."""
-    if not spec:
+    if not spec or not spec.strip():
         return list(range(n))
-    out = []
+    out = set()
     for part in spec.split(','):
-        a, _, b = part.partition('-')
-        out += range(int(a) - 1, int(b or a))
-    return [p for p in out if 0 <= p < n]
+        m = re.fullmatch(r'\s*(\d+)\s*(?:[-–]\s*(\d+))?\s*', part)
+        a, b = (int(m.group(1)), int(m.group(2) or m.group(1))) if m else (0, 0)
+        if not m or a < 1 or b < a:
+            raise SystemExit(f'Pages: "{part.strip()}" is not a page or a range. Write them like 1-3,7.')
+        out.update(range(a - 1, min(b, n)))
+    if not out:
+        raise SystemExit(f'Pages: "{spec.strip()}" is past the end: the scan has {n} pages.')
+    return sorted(out)
 
 
 def month_key():
@@ -72,7 +79,8 @@ def encode(page):
     """(image bytes, width, height) of the page at the scan's own resolution, in grey; shrunk
     (and as JPEG) only if it would pass the request size limit."""
     images = page.get_images(full=True)
-    zoom = images[0][2] / page.rect.width if images else 300 / 72
+    # the scan is the page's largest picture (a stamp or logo may be listed before it)
+    zoom = max(i[2] for i in images) / page.rect.width if images else 300 / 72
     while True:
         pix = pymupdf.Pixmap(pymupdf.csGRAY, page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False))
         for fmt, kw in (('png', {}), ('jpeg', {'jpg_quality': 92}), ('jpeg', {'jpg_quality': 85})):
@@ -210,19 +218,50 @@ def add_text_layer(page, result, font):
         writer.write_text(page, render_mode=3, morph=(base, pymupdf.Matrix(stretch, 1 / stretch)))
 
 
-def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=False, recognize=None, log=print):
+def _scan_mark(src, n):
+    """What tells one scan from another: its page count and a digest of the file."""
+    digest = hashlib.sha256()
+    with open(src, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            digest.update(chunk)
+    return {'pages': n, 'sha256': digest.hexdigest()}
+
+
+def _others_cache(cache, mark):
+    """Does the cache folder hold another scan's results? Its pages are named by number only,
+    so a different scan saved under the same name would be given the old scan's text. A cache
+    from before scans were marked is taken as this scan's."""
+    try:
+        return json.loads((cache / 'scan.json').read_text(encoding='utf-8')) != mark
+    except (OSError, ValueError):
+        return False
+
+
+def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=False, recognize=None, log=print,
+        stop=None):
     """OCR the pages of ``src`` into ``out`` (default: <src>_ocr.pdf) and its .txt. Returns
-    the PDF's path (None for a dry run). ``recognize``: image bytes -> result, instead of
-    Google's (for tests); ``log``: where the progress lines go."""
+    the PDF's path (None for a dry run or a stopped one). ``recognize``: image bytes -> result,
+    instead of Google's (for tests); ``log``: where the progress lines go; ``stop``: a
+    threading.Event; once set no further page is sent (pages done stay in the cache)."""
     src = Path(src)
     out = Path(out) if out else src.with_name(src.stem + '_ocr.pdf')
     if out.resolve() == src.resolve():
         raise SystemExit('The output must be a different file from the input.')
+    if out.suffix.lower() != '.pdf':
+        raise SystemExit(f'The OCR\'d copy is a PDF: give it a name ending .pdf, not {out.name}.')
     cache = out.with_name(out.stem + '_vision_cache')
-    doc = pymupdf.open(src)
+    try:
+        doc = pymupdf.open(src)
+    except Exception as e:
+        raise SystemExit(f'{src.name} could not be opened as a PDF: {e}')
     chosen = parse_pages(pages, len(doc))
     cached = lambda p: cache / f'page_{p + 1:04d}.json'
-    todo = [p for p in chosen if not cached(p).exists()]
+    mark = _scan_mark(src, len(doc))
+    stale = _others_cache(cache, mark)
+    if stale:
+        log('The saved OCR results next to this file are from another scan: they are not used.')
+    cached_ok = lambda p: not stale and cached(p).is_file()
+    todo = [p for p in chosen if not cached_ok(p)]
     used = units_used()
     log(f'{len(chosen)} pages selected, {len(todo)} need OCR (the rest are cached). '
           f'Units used this month by this tool: {used}')
@@ -238,6 +277,11 @@ def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=Fa
     if recognize is None and todo:
         recognize = vision_recognizer([h.strip() for h in lang.split(',') if h.strip()])
     cache.mkdir(exist_ok=True)
+    if stale:
+        for old in cache.glob('page_*.json'):
+            old.unlink()
+        stale = False
+    (cache / 'scan.json').write_text(json.dumps(mark), encoding='utf-8')
     fontfile = find_font()
     if fontfile is None:
         log('WARNING: DejaVu Sans not found; accents may be lost in the text layer.')
@@ -245,7 +289,10 @@ def ocr(src, out=None, pages=None, lang='en', limit=900, dry_run=False, force=Fa
     texts = []
     for p in chosen:
         page = doc[p]
-        if cached(p).exists():
+        if stop is not None and stop.is_set():
+            log(f'Stopped: the pages done so far are kept, and a new run carries on from page {p + 1}.')
+            return None
+        if cached_ok(p):
             result = json.loads(cached(p).read_text())
         else:
             data, w, h = encode(page)
