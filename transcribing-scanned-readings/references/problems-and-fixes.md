@@ -5,8 +5,8 @@ scan). Check here before changing the code: most "simpler" approaches were tried
 
 | Symptom | Cause | Fix (where) |
 |---|---|---|
-| Paragraph broken at every page break | Pages written separately | Joined when the first part has no closing punctuation and the next starts lower case, or the next page starts `+ `; `{47}` mark at the break (`build.compose`) |
-| `self-` / `conscious` → "selfconscious" | Every line-end hyphen was dropped | Kept for prefixes (self, non, quasi, ex, well, half, all), compounds printed whole elsewhere, or a capital next (`Lieutenant-` / `Governors`) (`text.join`) |
+| Paragraph broken at every page break | Pages written separately | Joined whenever the first part has no closing punctuation (the old rule also wanted a lower-case start, which split a paragraph before a name, a number or a quotation mark), or the next page starts `+ `; `{47}` mark at the break (`build.compose`) |
+| `self-` / `conscious` → "selfconscious" | Every line-end hyphen was dropped | Kept for prefixes (self, non, quasi, well, half, all), compounds printed whole elsewhere, or a capital next (`Lieutenant-` / `Governors`) (`text.join`) |
 | "Kr̥-" / "ṣṇa" became "Kr̥- ṣṇa"; "ʿulamā-" / "ʾ" kept its hyphen | `\w` misses combining accents; ʾ has no case | Word chars include combining marks; a word goes on when the next letter isn't a capital (`text.WORD_CHAR`, `goes_on`) |
 | Hindi/Urdu paragraphs always joined across pages | Sentence end knew only . ! ? | Danda । ॥ and Urdu ۔ ؟ end sentences too (`text.TERMINAL_RE`) |
 | Note labels repeated (numbering restarts per page or chapter) | Markdown needs unique labels | Repeats relabelled `[^4-2]` (`build.compose`) |
@@ -36,3 +36,10 @@ skill folder plus a copy of `scanocr/transcribe` in `scripts/scanocr/`.
 diane350/scanocr-skill (published on every merge to main), else uses the bundled copy, or
 the repository's code when run from `.claude/skills/` in the repo. Re-upload the zip only
 when SKILL.md changes. The description stays under 200 characters (claude.ai's limit).
+| Endnotes joined to the wrong notes, or to another chapter's | Notes were matched to markers page by page | A marker with no note on its page waits; a later note with no marker on its page takes the oldest waiting marker of that number (`build.compose`) |
+| Two columns read straight across | Lines were sorted by height only | A gutter is looked for in the body lines; left column first, then right, full-width lines keep their place (`pages._reading_order`) |
+| `3.5`, `1857-58`, `vol.2` turned into note markers | Any digit after a letter or full stop was a marker | Decimals, ranges and numbers after abbreviations are left plain (`pages._mark_plain`) |
+| "St Paul" became "& Paul"; a sentence with "downloaded from" vanished | Misread and watermark rules too wide | Only `8c` is turned into `&`; a watermark must start the line (`text.py`) |
+| Verse and lists run into one paragraph | Every block was joined to one line | Lines ending `\\` keep their breaks; list items stay one a line (`build.blocks_of`) |
+| A plate between pages shifted every page number after it | No way to say a page is not counted | `page: -` (`text.page_labels`); build also lists page numbers that are out of step |
+| The year in a running head taken for the page number | First number found at the top | The numbers of all pages vote: the one that runs in step wins (`pages._settle_numbers`) |

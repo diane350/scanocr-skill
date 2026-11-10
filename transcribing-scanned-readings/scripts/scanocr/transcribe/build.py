@@ -13,9 +13,11 @@ from collections import Counter
 
 from ..markup import LOOSE_DEF_RE, NOTE_DEF_RE, NOTE_REF_RE, check_notes, page_mark, unique_label
 from .pages import load_pages
-from .text import continues, hyphen_vocabulary, join, page_labels
+from .text import continues, hyphen_vocabulary, join, number_value, page_labels
 
 COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
+# a line that starts an item of a list: - one, • two, 3. three, (a) four
+LIST_RE = re.compile(r'(?:[-*•]|\d{1,3}[.)]|\([a-z0-9]{1,4}\))\s+\S')
 
 
 def _as_note(line):
@@ -54,9 +56,17 @@ def blocks_of(body, vocab, said=None):
                 said.append(f'text after the notes was joined to note [^{label}]: "{first[:40]}…"')
         else:
             kind = 'q' if first.startswith('>') else 'p'
-            text = ''
+            lines = [re.sub(r'^\s*>\s?', '', l).strip() if kind == 'q' else l.strip() for l in lines]
+            items = sum(bool(LIST_RE.match(l)) for l in lines)
+            text, start = '', len(out)
             for line in lines:
-                text = join(text, re.sub(r'^\s*>\s?', '', line).strip() if kind == 'q' else line.strip(), vocab)
+                if text.endswith('\\'):                  # a line of verse: its break is kept
+                    text += '\n' + line
+                elif text and items > 1 and LIST_RE.match(lines[0]) and LIST_RE.match(line):
+                    out.append((kind, text))             # the next item of a list
+                    text = line
+                else:
+                    text = join(text, line, vocab)
             out.append((kind, text))
     return out
 
@@ -78,12 +88,15 @@ def compose(pages, labels):
     vocab = hyphen_vocabulary('\n'.join(p.body for p in pages if p.status == 'done'))
     items, notes, problems = [], {}, []        # items: [kind, text]
     seen_labels = set()
-    running = {}            # notes on the page before, as labelled there -> as labelled in the .md
+    last_note = None        # the last note on the page before: (as labelled there, as labelled in the .md)
+    waiting = {}            # label -> markers still without a note (endnotes), oldest first: [(key, page name)]
+    found = {}              # a waiting marker's key -> its note's label in the .md
+    problems += _out_of_step(pages, labels)
     for i, (page, label) in enumerate(zip(pages, labels), 1):
         name = f'page {i}' + (f' (p. {label})' if label else '')
         if page.status != 'done':
             items.append(['gap', f'[{name}: not transcribed yet]'])
-            running = {}
+            last_note = None
             continue
         problems += [f'{name}: {p}' for p in page.problems]
         said = []
@@ -91,43 +104,57 @@ def compose(pages, labels):
         problems += [f'{name}: {p}' for p in said]
         defs = [(m.group(1), m.group(2)) for k, t in blocks if k == 'n' for m in [NOTE_DEF_RE.match(t)]]
         refs = [r for k, t in blocks if k != 'n' for r in NOTE_REF_RE.findall(t)]
-        rename, continued = {}, {}
+        rename = {}
         count = Counter(lab for lab, _ in defs)
-        for lab, text in defs:
-            # a note running on from the page before: no marker here, or the first of two
-            # notes with that label (the second is this page's own)
-            if lab in running and lab not in continued and (lab not in refs or count[lab] > 1):
-                notes[running[lab]] = join(notes[running[lab]], text, vocab)
-                continued[lab] = running[lab]
+        continued = None
+        for k, (lab, text) in enumerate(defs):
+            # The rest of a note from the page before: only that page's last note can run
+            # on, as this page's first, with no marker here (or as the first of two notes
+            # with that label: the second is this page's own).
+            if k == 0 and last_note and lab == last_note[0] and (lab not in refs or count[lab] > 1):
+                notes[last_note[1]] = join(notes[last_note[1]], text, vocab)
+                continued = last_note
                 continue
             new = lab
             n = 2
             while new in seen_labels:
                 new = unique_label(lab, n)
                 n += 1
-            rename[lab] = new
             seen_labels.add(new)
             notes[new] = text
-        for r in refs:
-            if r not in rename:
-                problems.append(f'{name}: marker [^{r}] has no note on this page')
-        for lab, n in count.items():
-            if n - (lab in continued) > 1:
-                problems.append(f'{name}: note [^{lab}] is defined {n} times on this page')
-        for lab, _ in defs:
-            if lab in rename and lab not in refs:
+            if lab in refs:
+                rename[lab] = new
+            elif waiting.get(lab):                   # an endnote: the oldest marker still waiting for it
+                found[waiting[lab].pop(0)[0]] = new
+            else:
                 problems.append(f'{name}: note [^{lab}] has no marker on this page')
-        running = {**continued, **rename}
+            last_note = (lab, new)
+        if defs and continued and len(defs) == 1:
+            last_note = continued
+        for lab, n in count.items():
+            if lab in refs and n - bool(continued and continued[0] == lab) > 1:      # (endnotes may repeat)
+                problems.append(f'{name}: note [^{lab}] is defined {n} times on this page')
+
+        def relabel(m):
+            lab = m.group(1)
+            if lab in rename:
+                return f'[^{rename[lab]}]'
+            key = f'\x00{len(found) + sum(map(len, waiting.values()))}\x00'     # its note comes on a later page
+            waiting.setdefault(lab, []).append((key, name))
+            return f'[^{key}]'
+
         mark = page_mark(label) if label else ''
         first = True
         for kind, text in blocks:
             if kind == 'n':
                 continue
-            text = NOTE_REF_RE.sub(lambda m: f'[^{rename.get(m.group(1), m.group(1))}]', text)
+            text = NOTE_REF_RE.sub(relabel, text)
             forced = first and text.startswith('+ ')
             text = text.removeprefix('+ ')
             last = items[-1] if items else None
-            if (first and last and last[0] == kind and kind in 'pq'
+            if first and last and last[0] == kind == 'q' and last[1].endswith('\\'):     # verse: a new line
+                last[1] += '\n' + (f'{mark} ' if mark else '') + text
+            elif (first and last and last[0] == kind and kind in 'pq'
                     and (forced or continues(last[1], text))):
                 last[1] = join_marked(last[1], text, mark, vocab) if mark else join(last[1], text, vocab)
             elif first and mark and kind in 'ht':        # a heading or table keeps its own line
@@ -139,11 +166,35 @@ def compose(pages, labels):
             first = False
         if first and mark:                           # a page with no text of its own
             items.append(['p', mark])
+    for lab, markers in waiting.items():             # markers whose note never came
+        for key, name in markers:
+            n = 2
+            while (new := unique_label(lab, n)) in seen_labels:
+                n += 1
+            seen_labels.add(new)
+            found[key] = lab if lab not in notes else new      # not some other note that has this label
+            problems.append(f'{name}: marker [^{lab}] has no note')
     out = []
     for kind, text in items:
-        out.append('> ' + text if kind == 'q' else text)
+        text = re.sub(r'\[\^(\x00\d+\x00)\]', lambda m: f'[^{found[m.group(1)]}]', text)
+        out.append('> ' + text.replace('\n', '\n> ') if kind == 'q' else text)
     out += [f'[^{lab}]: {text}' for lab, text in notes.items()]
     return '\n\n'.join(out) + '\n', problems
+
+
+def _out_of_step(pages, labels):
+    """Problems: typed page numbers that don't follow the page before (a misread 41 after 46)."""
+    out, prev, n = [], None, 0                      # n: pages counted so far
+    for i, (page, label) in enumerate(zip(pages, labels), 1):
+        value = number_value(label or '')
+        if not value:
+            continue
+        n += 1
+        if prev and number_value(page.number or '') and value[1] == prev[1][1] and value[0] != prev[1][0] + n - prev[3]:
+            out.append(f'page {i} (p. {label}): its page number does not follow page {prev[0]}\'s ({prev[2]}); '
+                       f'check both (pages left out of the scan are fine)')
+        prev = (i, value, label, n)
+    return out
 
 
 def build(workdir, out_path, partial=False, log=print):

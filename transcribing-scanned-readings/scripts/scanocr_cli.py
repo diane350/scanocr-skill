@@ -28,12 +28,24 @@ NEEDED = {'pymupdf': 'pymupdf==1.28.2'}     # as in pyproject.toml
 PUBLISHED = 'https://github.com/diane350/scanocr-skill'
 # '' turns fetching off (tests); a file:// URL stands in for GitHub
 LATEST_URL = os.environ.get('SCANOCR_SKILL_URL', 'https://codeload.github.com/diane350/scanocr-skill/tar.gz/refs/heads/main')
-CACHE = os.path.join(tempfile.gettempdir(), 'scanocr-skill-latest')
+# one per user: code is run from here, so nobody else on the computer may be able to put any there
+CACHE = os.path.join(tempfile.gettempdir(), f'scanocr-skill-latest-{os.getuid() if hasattr(os, "getuid") else "me"}')
 MAX_AGE = 6 * 3600                          # seconds; an older copy in CACHE is fetched again
 
 
 def has_code(place):
     return os.path.exists(os.path.join(place, 'scanocr', '__init__.py'))
+
+
+def mine(place):
+    """Is the folder this user's own, and closed to others? (The temp folder is shared.)"""
+    if not hasattr(os, 'getuid'):
+        return True
+    try:
+        st = os.lstat(place)
+    except OSError:
+        return False
+    return st.st_uid == os.getuid() and not st.st_mode & 0o022 and not os.path.islink(place)
 
 
 def code_location():
@@ -50,11 +62,15 @@ def latest_code():
     None if it can't be had."""
     if not LATEST_URL:
         return None
+    if os.path.lexists(CACHE) and not mine(CACHE):
+        print(f'Using the code bundled with the skill ({CACHE} is not this user\'s own folder).', flush=True)
+        return None
     if not has_code(CACHE) or time.time() - os.path.getmtime(CACHE) > MAX_AGE:
         try:
             data = urllib.request.urlopen(LATEST_URL, timeout=20).read()
             part = CACHE + '.part'
             shutil.rmtree(part, ignore_errors=True)
+            os.mkdir(part, 0o700)
             with tarfile.open(fileobj=io.BytesIO(data)) as tar:
                 for m in tar.getmembers():          # <repo>-main/<skill>/... -> CACHE/...
                     rel = m.name.split('/', 1)[1] if '/' in m.name else ''

@@ -74,6 +74,13 @@ as "[^12]Its text" or broken into short lines is wrong.
 - A chapter's title on its first page must be kept, as "# Title", with its note marker if it \
 has one (# The Title[^*]). The draft may have put the title in a <!-- --> comment as if it \
 were a running head: then add it as a heading above the text.
+- Endnotes: where the notes are printed at the end of the chapter or book, the markers stay in \
+the text as printed and each note on the notes pages starts "[^4]: ". A number at the start of a \
+line of body text ("9 July") is not a note.
+- A list is one item a line ("- ...", "1. ...", "(a) ..."). Verse: every line starts "> " and \
+ends with a backslash, but the last. A plain number is not a marker ("No. 3", "3.5", "1857-58").
+- A note that goes on from the page before is labelled "[^?]: " when the draft can't tell whose \
+it is: give it that note's number if the image shows it, or leave it.
 - Every diacritic exactly as printed (Kṛṣṇa, ʿulamā, Chaurī), curly quotes and dashes as printed, \
 misspellings and old spellings kept. Do not modernise or correct the author.
 Running heads, page numbers and watermarks are left out: they are in <!-- --> comments in the \

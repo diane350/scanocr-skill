@@ -6,8 +6,9 @@ import re
 from ..markup import NOTE_REF
 
 # a line-end hyphen after one of these is part of the word (self-conscious, non-official)
-PREFIXES = ('self', 'non', 'quasi', 'ex', 'well', 'half', 'all')
-TERMINAL_RE = re.compile(rf'[.!?:।॥۔؟]["”’\')\]]*(?:{NOTE_REF})?$')
+# (not ex-: a line breaks ex-ample, ex-pect far more often than it prints ex-officio)
+PREFIXES = ('self', 'non', 'quasi', 'well', 'half', 'all')
+TERMINAL_RE = re.compile(rf'[.!?:।॥۔؟]["”’\')\]_]*(?:{NOTE_REF})*$')
 # a word's letters, with combining accents (r̥, m̐) and apostrophes
 WORD_CHAR = r"[\ẁ-ͯ᪰-᫿᷀-᷿⃐-⃿︠-︯’']"
 WORD_RE = re.compile(rf"{WORD_CHAR}+")
@@ -16,12 +17,15 @@ ROMAN = {'i': 1, 'v': 5, 'x': 10, 'l': 50, 'c': 100, 'd': 500, 'm': 1000}
 ROMAN_MAX = 400             # front matter ends well before; MIX or DIV in a running head is a word
 
 LIGATURES = str.maketrans({'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ﬃ': 'ffi', 'ﬄ': 'ffl', 'ﬅ': 'st', 'ﬆ': 'st'})
-WATERMARK_RE = re.compile(r'(downloaded\s+(by|from)\b.*|this content downloaded from.*|'
-                          r'all use subject to\s+https?://\S+.*)', re.I)
-# common misreads in old text layers: down* (’), 8c and St (&). A * after a word can also be
+# a line that starts as one: the same words inside a sentence ("the files were downloaded from
+# the archive") are the author's
+WATERMARK_RE = re.compile(r'^\W*(downloaded\s+(by|from)\b|this content downloaded from|'
+                          r'all use subject to\s+https?://\S+)', re.I)
+# common misreads in old text layers: down* (’) and 8c (&). (St was read as & too, which
+# turned St Paul into & Paul in every clean text layer.) A * after a word can also be
 # a note marker (a title's acknowledgements note), so the draft decides that one itself.
 STAR_RE = re.compile(r'(?<=[a-z])\*(?=[\s,.;:)]|$)', re.M)
-MISREADS = [(re.compile(r'(?<=\s)(?:8c|St)(?=\s+[A-Z])'), '&')]
+MISREADS = [(re.compile(r'(?<=\s)8c(?=\s+[A-Z])'), '&')]
 
 
 def goes_on(text):
@@ -46,7 +50,7 @@ def join(left, right, vocab=()):
         if left.endswith('-_') and right.startswith('_'):
             return left[:-1] + right[1:]            # _Lieutenant-_ / _Governors_
         return left + right
-    if left.endswith(('—', '–')):
+    if left.endswith(('—', '–')) and not left.endswith((' —', ' –')):      # word—word; "word – word" keeps its spaces
         return left + right
     return left + ' ' + right
 
@@ -57,8 +61,9 @@ def hyphen_vocabulary(text):
 
 
 def continues(prev, nxt):
-    """Does ``nxt`` carry on the sentence ``prev`` broke off?"""
-    return not TERMINAL_RE.search(prev.rstrip()) and goes_on(nxt)
+    """Does ``nxt`` carry on the sentence ``prev`` broke off? It does when ``prev`` has no
+    closing punctuation, whatever ``nxt`` starts with (a name, a year, a quotation)."""
+    return bool(nxt.strip()) and not TERMINAL_RE.search(prev.rstrip())
 
 
 def fix_old_text(text, star=True):
@@ -98,9 +103,21 @@ def _show(value, style):
     return out if style == 'roman' else out.upper()
 
 
+NOT_COUNTED = '-'           # typed as a page's number: it has none and is not counted (a plate)
+
+
 def page_labels(numbers):
     """Printed page numbers for every page: those typed, the rest counted on from the
-    page before (or back from the page after). None where nothing can be worked out."""
+    page before (or back from the page after). None where nothing can be worked out, and
+    for a page typed as NOT_COUNTED, which the count passes over."""
+    counted = [i for i, n in enumerate(numbers) if (n or '').strip() != NOT_COUNTED]
+    out = [None] * len(numbers)
+    for i, label in zip(counted, _labels([numbers[i] for i in counted])):
+        out[i] = label
+    return out
+
+
+def _labels(numbers):
     vals = [number_value(n or '') for n in numbers]
     known = [i for i, v in enumerate(vals) if v]
     out = []

@@ -69,12 +69,23 @@ A paragraph on one line, _italics_ as printed, a note marker[^12] where it is pr
   the rest. Build joins it (and a word hyphenated across the break). The rest of a note
   goes under the same label: `[^12]: ...continued text`. If the page also has its own
   note 12 (numbering restarts each page), write both as `[^12]`, the continuation first:
-  build joins the first to the note before and gives the second the marker. If a
-  paragraph goes on after a full stop at the page foot, start the next page with `+ `.
+  build joins the first to the note before and gives the second the marker. Build joins
+  a paragraph whenever the page ends without closing punctuation; if it goes on after a
+  full stop, start the next page with `+ `.
+- Endnotes (notes at the end of the chapter or book): put the markers in the text as
+  printed, and on the notes pages write each note as `[^4]: ...`, as printed. Build gives
+  each note to the oldest marker of that number still without one, so numbering that
+  starts again in each chapter works. Transcribe the notes pages; without them every
+  marker is listed as having no note.
 - Note labels as printed (`[^4]`, `[^*]`); build makes repeats unique. Every note goes
   after the text, as one line starting `[^4]: ` (with the colon); a superscript number
   in the text is always a marker, `[^4]`, never a plain `4`.
-- Tables as Markdown tables. Headings as `#`/`##`.
+- Tables as Markdown tables. Headings as `#`/`##`. A list: one item a line (`- ...`,
+  `1. ...`, `(a) ...`). Verse: every line of the quotation starts `> ` and ends with `\`
+  (but the last), which keeps the line breaks.
+- `page: -` for a page that has no number and is not counted (a plate between pages);
+  blank for one that is counted (a chapter's first page).
+- Leave out catchwords (an old book's repeat of the next page's first word at the foot).
 - Every diacritic exactly as printed (Kṛṣṇa, ʿulamā), curly quotes and dashes as printed,
   `(sic)`, misspellings and old spellings kept.
 
@@ -85,6 +96,11 @@ A paragraph on one line, _italics_ as printed, a note marker[^12] where it is pr
   text; quotations aren't marked `>`.
 - Italics are partial or wrong; small capitals are lost.
 - Misreads: `rn`→`m` (subaltemity), `rt`→`n` (imponant), `die` for `the`, `S` for `8` and
-  `l` for `1` in numbers, `of1799` run together, `’` as `*`, `&` as `8c`/`St`, straight quotes.
-- Notes split or run together; a note's continuation at the top of a page.
+  `l` for `1` in numbers, `of1799` run together, `’` as `*`, `&` as `8c`, straight quotes.
+- Notes split or run together; a note's continuation at the top of a page (the draft
+  labels it `[^?]:` when it can't tell whose it is: give it that note's number).
+- A compound broken at a line end loses its hyphen (`twentieth-` / `century` comes out
+  `twentiethcentury`) unless the page prints it whole elsewhere.
+- A plain number taken for a marker, or the reverse (`no.[^3]` for "No. 3").
+- Two columns are read left then right; check where a title, table or picture breaks them.
 - A chapter title taken for a running head (in a comment), and its `*` read as `’`.

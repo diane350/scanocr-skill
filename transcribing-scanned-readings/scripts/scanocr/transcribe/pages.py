@@ -5,18 +5,21 @@ import os
 import re
 import unicodedata
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 
 import pymupdf
 
 from ..markup import NOTE_DEF_RE
-from .text import LIGATURES, STAR_RE, fix_old_text, join, number_value
+from .text import (LIGATURES, NOT_COUNTED, STAR_RE, continues, fix_old_text, hyphen_vocabulary, join,
+                   number_value)
 
 STATUS_RE = re.compile(r'^\s*#?\s*status:\s*(\S+)', re.I)
 PAGE_RE = re.compile(r'^\s*page:\s*(.*?)\s*$', re.I)
 STATUSES = ('todo', 'draft', 'done')
 DPI = 200
 ZOOM_DPI = 300
+MAX_PX = 2800                           # a page image's long edge is at most this
 BLANK_DPI, BLANK_PX = 50, 400           # a blank page: enough to see that it is blank
 TYPED = '<!-- typed text: proofread without opening the image -->'
 FIX_SEP = ' ==> '
@@ -50,7 +53,7 @@ def parse_page(text):
     page.body = '\n'.join(lines[head:]).strip()
     if page.status not in STATUSES:
         page.problems.append(f'status should be todo, draft or done, not {page.status!r}')
-    if page.number and not number_value(page.number):
+    if page.number and page.number != NOT_COUNTED and not number_value(page.number):
         page.problems.append(f'page: {page.number!r} is not a page number')
     return page
 
@@ -197,8 +200,10 @@ def _render(sources, pages_dir):
             try:
                 if pdf_page is not None:
                     area = _pdf_area(pdf_page)
-                    pix = (pdf_page.get_pixmap(dpi=DPI, clip=area) if area
-                           else pdf_page.get_pixmap(dpi=BLANK_DPI))
+                    # a page saved very large (ScanTailor writes 96-dpi page sizes) is not drawn larger
+                    dpi = int(min(DPI, 72 * MAX_PX / max(pdf_page.rect.width, pdf_page.rect.height)))
+                    pix = (pdf_page.get_pixmap(dpi=dpi, clip=area) if area
+                           else pdf_page.get_pixmap(dpi=min(dpi, BLANK_DPI)))
                 else:                                   # an image: its own resolution
                     whole = _image_pixmap(image_page)
                     area = _image_area(whole)
@@ -210,10 +215,18 @@ def _render(sources, pages_dir):
     return out
 
 
+def _job(workdir):
+    """What ``prepare`` wrote down about the folder: its sources and number of pages."""
+    try:
+        with open(os.path.join(workdir, 'job.json')) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        raise SystemExit(f'{workdir} is not a work folder yet: run prepare <scan> {workdir} first.')
+
+
 def _source_page(workdir, i):
     """The ``i``th page (from 1) of the job's sources: (PDF page, None) or (None, image page)."""
-    with open(os.path.join(workdir, 'job.json')) as f:
-        job = json.load(f)
+    job = _job(workdir)
     if not 1 <= i <= job['pages']:
         raise SystemExit(f'There is no page {i}: the pages are 1 to {job["pages"]}.')
     pages = [p for src in job['sources'] for p in _source_pages(src)]
@@ -228,7 +241,8 @@ def zoom(workdir, i, part):
     if pdf_page is not None:
         box = _pdf_area(pdf_page) or pdf_page.rect
         y = box.y0 + box.height * start
-        pix = pdf_page.get_pixmap(dpi=ZOOM_DPI, clip=pymupdf.Rect(box.x0, y, box.x1, y + box.height * 0.55))
+        dpi = int(min(ZOOM_DPI, 72 * 1.5 * MAX_PX / max(pdf_page.rect.width, pdf_page.rect.height)))
+        pix = pdf_page.get_pixmap(dpi=dpi, clip=pymupdf.Rect(box.x0, y, box.x1, y + box.height * 0.55))
     else:                                           # an image: nothing finer than itself
         whole = _image_pixmap(image_page)
         box = _image_area(whole) or whole.irect
@@ -261,8 +275,8 @@ def _line_text(spans, note):
             out.append(t)
             continue
         small = sp['size'] < 0.78 * max(s['size'] for s in spans)
-        if small and t.strip().isdigit() and (k or not note):
-            out.append(f'[^{t.strip()}]')
+        if small and re.fullmatch(r'\d{1,3}(?:\s*,\s*\d{1,3})*', t.strip()) and (k or not note):
+            out.append(''.join(f'[^{n.strip()}]' for n in t.split(',')))      # 2,3: two markers
         elif sp['flags'] & 2:
             lead, core, tail = re.match(r'(\s*)(.*?)(\s*)$', t).groups()
             out.append(f'{lead}_{core}_{tail}')
@@ -282,6 +296,34 @@ MARKER_RE = re.compile(r'(?<=[^\s\d(\[])(\d{1,3}|[*†‡§])(?=[\s,;:.)’”]|
 # a line that starts a note: its label as a marker (a superscript, which no line of the text
 # itself starts with) or as plain text, with or without a space after it (33I am thinking)
 NOTE_START_RE = re.compile(r'^(?:\[\^([^\]\s]+)\]:?\s*|(\d{1,3}|[*†‡§])(?:\s+|(?=[A-Z‘“"\'(_])))')
+# ... but not a number that only follows a full stop: vol.2, p.23, Rs.5
+ABBREVIATIONS = ('vol', 'vols', 'p', 'pp', 'no', 'nos', 'ch', 'chap', 'fig', 'figs', 'rs', 'art', 'sec', 'para',
+                 'cf', 'f', 'ff', 'n', 'nn', 'bk', 'pt', 'col', 'cols', 'app', 'l', 'll', 'v', 'c', 'ca', 'ms', 'mss')
+
+
+def _mark_plain(text, labels):
+    """``text`` with the plain numbers and symbols that are note markers (their notes, ``labels``,
+    are on the page) marked: masses.3 -> masses.[^3]. A decimal (3.5), a range (1914-18), a
+    thousand (1,000), a date (12.3.1857) or a reference (vol.2, p.23) is not a marker."""
+    def marked(m):
+        label, before = m.group(1), text[:m.start()]
+        if label not in labels:
+            return label
+        if label.isdigit():
+            if not (before[-1].isalpha() or before[-1] in '.,;:!?)]’”\'"»_'):
+                return label                                    # 1914–18, 24/7, £5
+            if before[-1] in '.,' and (before[-2:-1].isdigit() or text[m.end():m.end() + 2][:1] == '.'
+                                       and text[m.end() + 1:m.end() + 2].isdigit()):
+                return label                                    # 3.5, 1,000, 12.3.1857
+            word = re.search(r'([A-Za-z]+)\.$', before)
+            if word and word.group(1).lower() in ABBREVIATIONS:
+                return label                                    # vol.2
+        return f'[^{label}]'
+    return MARKER_RE.sub(marked, text)
+
+
+COLUMN_GAP = 6                          # a gutter between two columns is at least this wide (points)
+DROP_CAP = 1.8                          # an initial this much larger than the text's type
 HEAD_ZONE, FOOT_ZONE = 0.12, 0.93       # running heads and folios sit above / below these (of the height)
 TITLE_ZONE = 0.35                       # a chapter's title sits above this (of the height)
 BIG = 1.2                               # type this much larger than the text's is a title or heading
@@ -311,19 +353,24 @@ def _next_label(label):
     return str(int(label) + 1) if label and label.isdigit() else None
 
 
-def _paragraphs(kept, height, body_size):
+REST_OF_NOTE = '<!-- the rest of a note from the page before: start it with that note\'s label, [^12]: -->'
+
+
+def _paragraphs(kept, height, body_size, carried=None, vocab=()):
     """The kept lines (box, size, note, text) as paragraphs, headings ('# ...') and notes
     ('[^12]: ...'). The notes are found from their labels, not only from their smaller type
     (an OCR layer's type sizes are rough): a line starting with a superscript number, or with
     a number after a gap below the text, starts them, and every line from there on is a note
-    or the rest of one. In the notes a new note starts at the next number, or a superscript."""
+    or the rest of one. In the notes a new note starts at the next number, or a superscript.
+    Small type above the first note is the rest of a note from the page before (``carried``:
+    its label, if known)."""
     main = [b for b, _, n, _ in kept if not n] or [b for b, _, _, _ in kept]
     left, right = _median([b[0] for b in main]), _median([b[2] for b in main])
     steps = [b[3] - a[3] for (a, *_), (b, *_) in zip(kept, kept[1:]) if 0 < b[3] - a[3] < 3 * body_size]
     spacing = _median(steps) if steps else 1.2 * body_size
     paras, prev = [], None
     in_notes, sure, last = False, False, None      # sure: the notes were found by more than their size
-    for box, size, note, text in kept:
+    for j, (box, size, note, text) in enumerate(kept):
         start = NOTE_START_RE.match(text)
         label = start and (start.group(1) or start.group(2))
         marker = bool(start and start.group(1))
@@ -331,15 +378,21 @@ def _paragraphs(kept, height, body_size):
         if in_notes and not sure and not note and not marker:
             in_notes = False                       # small type that was not notes after all
         if start and in_notes:
-            opens = marker or label == _next_label(last) or not label.isdigit()
+            opens = (marker or label == _next_label(last) or not label.isdigit()
+                     or not (last or '').isdigit())     # the first number after a symbol's note (*)
         elif start:
             opens = marker or note or (gap and box[1] > TITLE_ZONE * height)
             sure = marker or gap
         else:
             opens = False
+        rest = (not in_notes and not start and note and prev is not None and not prev[3]
+                and box[1] > TITLE_ZONE * height and _notes_follow(kept, j))
         if opens:
             in_notes, last = True, label
             text = f'[^{label}]: ' + text[start.end():]
+        elif rest:                                 # the end of a note that began on the page before
+            in_notes, sure, opens = True, True, True
+            text = f'[^{carried}]: {text}' if carried else f'{REST_OF_NOTE}\n\n[^?]: {text}'
         big = size > BIG * body_size and not in_notes
         if big:
             text = ('# ' if box[1] < TITLE_ZONE * height else '## ') + text
@@ -349,13 +402,112 @@ def _paragraphs(kept, height, body_size):
         if new:
             paras.append(text)
         else:
-            paras[-1] = join(paras[-1], text)
-        prev = (in_notes, box, big)
+            paras[-1] = join(paras[-1], text, vocab)
+        prev = (in_notes, box, big, note)
     return paras
 
 
-def draft(pdf_page):
+def _notes_follow(kept, j):
+    """Do the small-type lines from ``kept[j]`` on lead straight into a numbered note?"""
+    for box, size, note, text in kept[j + 1:]:
+        if not note:
+            return False
+        if m := NOTE_START_RE.match(text):
+            return bool(m.group(1) or m.group(2))
+    return False
+
+
+def _gutter(pieces, top, bottom):
+    """The x of the gap between two columns of text, or None: a strip no line of the text
+    (between ``top`` and ``bottom``) crosses, with text on both sides of it side by side.
+    A title or an abstract set across both columns may cross it."""
+    body = [b for b, _ in pieces if b[1] >= top and b[3] <= bottom]
+    if len(body) < 12:
+        return None
+    x0, x1 = min(b[0] for b in body), max(b[2] for b in body)
+    rows = len({round((b[1] + b[3]) / 6) for b in body})          # lines of text, roughly
+    best, run = None, None
+    x = x0 + 0.25 * (x1 - x0)
+    while x <= x0 + 0.75 * (x1 - x0):
+        crossing = sum(b[0] < x < b[2] for b in body)
+        if crossing <= 0.2 * rows:
+            run = (run[0], x) if run else (x, x)
+            if best is None or run[1] - run[0] > best[1] - best[0]:
+                best = run
+        else:
+            run = None
+        x += 1
+    if best is None or best[1] - best[0] < COLUMN_GAP:
+        return None
+    g = (best[0] + best[1]) / 2
+    left, right = [b for b in body if b[2] <= g], [b for b in body if b[0] >= g]
+    if len(left) < 5 or len(right) < 5:
+        return None
+    # side by side, each column a block of full lines: not a list with a second, short column
+    shared = min(max(b[3] for b in left), max(b[3] for b in right)) - max(min(b[1] for b in left), min(b[1] for b in right))
+    wide = lambda col: max(b[2] for b in col) - min(b[0] for b in col)
+    tall = lambda col: max(b[3] for b in col) - min(b[1] for b in col)
+    if shared < 0.5 * min(tall(left), tall(right)) or min(wide(left), wide(right)) < 0.3 * (x1 - x0):
+        return None
+    lone = sum(1 for b in body if b[0] < g < b[2])
+    return g if lone <= 0.2 * rows else None
+
+
+def _side(box, gutter):
+    """Which column a line is in: 0 left, 1 right, None across both (or no columns)."""
+    if gutter is None or box[0] < gutter < box[2]:
+        return None
+    return 0 if box[2] <= gutter else 1
+
+
+def _reading_order(kept, gutter):
+    """The kept lines in runs to read one after the other: with two columns, the left column
+    then the right, between the lines set across both."""
+    runs, columns = [], ([], [])
+    def flush():
+        runs.extend(col[:] for col in columns if col)
+        columns[0].clear(), columns[1].clear()
+    for line in kept:
+        side = _side(line[0], gutter)
+        if side is None:
+            flush()
+            if runs and runs[-1] and _side(runs[-1][-1][0], gutter) is None and getattr(flush, 'across', False):
+                runs[-1].append(line)
+            else:
+                runs.append([line])
+            flush.across = True
+        else:
+            columns[side].append(line)
+            flush.across = False
+    flush()
+    return runs
+
+
+def _drop_capitals(kept, body_size):
+    """A large initial joined to the line it starts (T / he day began -> The day began); the
+    lines set in beside it are not indented."""
+    out = list(kept)
+    for cap in kept:
+        box, size, _, text = cap
+        if size < DROP_CAP * body_size or not (len(text) <= 2 and text.isalpha()):
+            continue
+        beside = [l for l in out if l is not cap and l[0][0] >= box[2] - 2 and l[0][1] < box[3] - 0.3 * body_size
+                  and l[0][3] > box[1]]
+        if not beside:
+            continue
+        first = min(beside, key=lambda l: l[0][1])
+        for line in beside:
+            k = out.index(line)
+            b = line[0]
+            out[k] = ((box[0], b[1], b[2], b[3]), line[1], line[2], (text if line is first else '') + line[3])
+        out.remove(cap)
+    return out
+
+
+def draft(pdf_page, carried=None):
     """A draft of the page from the PDF's old text layer, or None if it has none.
+    ``carried``: the label of the last note on the page before, which may end on this one.
+    Two columns are read one after the other.
     Paragraphs come from indents and short lines, italics from the type styles, headings
     from larger type, notes from their labels and smaller type, note markers from the
     notes found; running heads and folios become comments, which build leaves out."""
@@ -367,9 +519,25 @@ def draft(pdf_page):
     if not rows:
         return None
     rows.sort(key=lambda r: ((r[0][1] + r[0][3]) / 2, r[0][0]))
+    height = pdf_page.rect.height
+    gutter = _gutter(rows, HEAD_ZONE * height, FOOT_ZONE * height)
+    in_columns = lambda box: _side(box, gutter) is not None
+    centre = lambda box: (box[1] + box[3]) / 2
+    level = []                                         # the pieces on one baseline, left to right (a column at a time)
+    for row in rows:
+        if level and centre(row[0]) - centre(level[-1][-1][0]) < 3:
+            level[-1].append(row)
+        else:
+            level.append([row])
+    rows = [r for group in level
+            for r in sorted(group, key=lambda r: ((_side(r[0], gutter) or 0) if in_columns(r[0]) else 0, r[0][0]))]
     merged = []                                        # pieces on one baseline make one line
     for box, spans in rows:
-        if merged and abs((box[1] + box[3]) / 2 - (merged[-1][0][1] + merged[-1][0][3]) / 2) < 3:
+        apart = in_columns(box) and merged and _side(box, gutter) != _side(merged[-1][0], gutter)   # across the gutter
+        if merged and not apart:                       # a drop capital stands apart from the lines beside it
+            a, b = spans[0]['size'], merged[-1][1][0]['size']
+            apart = max(a, b) >= DROP_CAP * min(a, b) and len(''.join(sp['text'] for sp in (spans if a > b else merged[-1][1])).strip()) <= 2
+        if merged and not apart and abs((box[1] + box[3]) / 2 - (merged[-1][0][1] + merged[-1][0][3]) / 2) < 3:
             pb, ps = merged[-1]
             merged[-1] = ((min(pb[0], box[0]), pb[1], max(pb[2], box[2]), pb[3]),
                           ps + [{**spans[0], 'text': ' ' + spans[0]['text']}] + spans[1:])
@@ -384,7 +552,6 @@ def draft(pdf_page):
         text = fix_old_text(text[:-1] + '-' if text.endswith('\xad') else text, star=False).strip()
         if text:
             lines.append((box, size, note, text))
-    height = pdf_page.rect.height
     running = _running_lines(lines, height, body_size)
     numbers, head, foot, kept = [], [], [], []
     for k, (box, size, note, text) in enumerate(lines):
@@ -399,12 +566,19 @@ def draft(pdf_page):
         (head if box[3] < HEAD_ZONE * height else foot).append(STAR_RE.sub('’', text))
     if not kept:
         return None
-    paras = _paragraphs(kept, height, body_size)
+    vocab = hyphen_vocabulary('\n'.join(text for *_, text in kept))
+    paras = []
+    for run in _reading_order(_drop_capitals(kept, body_size), gutter):
+        more = _paragraphs(run, height, body_size, carried, vocab)
+        last = next((k for k in range(len(paras) - 1, -1, -1) if not NOTE_DEF_RE.match(paras[k])), None)
+        if (last is not None and more and gutter is not None and not paras[last].startswith('#')
+                and not re.match(r'#|\[\^|<!--', more[0]) and continues(paras[last], more[0])
+                and _side(run[0][0], gutter) == 1):
+            paras[last] = join(paras[last], more.pop(0), vocab)      # a paragraph running on in the next column
+        paras += more
     notes = [STAR_RE.sub('’', p) for p in paras if NOTE_DEF_RE.match(p)]
     labels = {NOTE_DEF_RE.match(n).group(1) for n in notes}
-    body_paras = [STAR_RE.sub('’', MARKER_RE.sub(
-                      lambda m: f'[^{m.group(1)}]' if m.group(1) in labels else m.group(1), p))
-                  for p in paras if not NOTE_DEF_RE.match(p)]
+    body_paras = [STAR_RE.sub('’', _mark_plain(p, labels)) for p in paras if not NOTE_DEF_RE.match(p)]
     parts = [f'<!-- {e} -->' for e in head] + body_paras + notes + [f'<!-- {e} -->' for e in foot]
     if len(set(numbers)) > 1:
         parts.insert(0, f'<!-- page numbers printed: {", ".join(dict.fromkeys(numbers))} -->')
@@ -417,6 +591,12 @@ def prepare(sources, workdir, resume=None):
     if isinstance(sources, str):
         sources = [sources]
     pages_dir = os.path.join(workdir, 'pages')
+    names = sorted(os.path.basename(s) for s in sources)
+    if os.path.exists(os.path.join(workdir, 'job.json')):
+        before = sorted(os.path.basename(s) for s in _job(workdir).get('sources', []))
+        if before != names:                 # its page files would be kept, as this reading's
+            raise SystemExit(f'{workdir} holds another reading ({", ".join(before)}). Use a new folder for '
+                             f'{", ".join(names)}.')
     os.makedirs(pages_dir, exist_ok=True)
     carried = {}
     if resume:
@@ -424,6 +604,7 @@ def prepare(sources, workdir, resume=None):
             carried = {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith('.md')}
     rendered = _render([os.path.abspath(s) for s in sources], pages_dir)
     counts = {s: 0 for s in STATUSES}
+    last_note = None
     for i, (image, pdf_page) in enumerate(rendered, 1):
         path = page_path(workdir, i)
         name = os.path.basename(path)
@@ -431,14 +612,17 @@ def prepare(sources, workdir, resume=None):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(carried[name])
         if not os.path.exists(path):
-            got = draft(pdf_page) if pdf_page is not None else None
+            got = draft(pdf_page, last_note) if pdf_page is not None else None
             if got:
                 write_page(path, 'draft', got[0], f'{TYPED}\n\n{got[1]}' if typed_text(pdf_page) else got[1])
             else:
                 write_page(path, 'todo', '', '')
         with open(path, encoding='utf-8') as f:
-            st = parse_page(f.read()).status
-        counts[st] = counts.get(st, 0) + 1
+            page = parse_page(f.read())
+        defs = [m.group(1) for line in page.body.split('\n') if (m := NOTE_DEF_RE.match(line))]
+        last_note = defs[-1] if defs and defs[-1] != '?' else None      # it may end on the next page
+        counts[page.status] = counts.get(page.status, 0) + 1
+    _settle_numbers(workdir, len(rendered))
     with open(os.path.join(workdir, 'job.json'), 'w') as f:
         json.dump({'sources': [os.path.abspath(s) for s in sources], 'pages': len(rendered)}, f)
     print(f'{len(rendered)} pages in {workdir}: ' +
@@ -449,11 +633,37 @@ def prepare(sources, workdir, resume=None):
     return len(rendered)
 
 
+PRINTED_RE = re.compile(r'<!-- page numbers printed: (.*?) -->\n*')
+
+
+def _settle_numbers(workdir, n):
+    """Where a draft found several numbers in a page's head and foot (a year or a volume
+    beside the folio), take the one that fits the run of the other pages' numbers. Left as it
+    is when no single run stands out (a reprint that prints two page numbers throughout)."""
+    pages = {}
+    for i in range(1, n + 1):
+        try:
+            with open(page_path(workdir, i), encoding='utf-8') as f:
+                pages[i] = parse_page(f.read())
+        except OSError:
+            pass
+    step = Counter(number_value(p.number)[0] - i for i, p in pages.items()
+                   if p.status == 'draft' and number_value(p.number or '') and number_value(p.number)[1] == 'arabic')
+    if not step:
+        return
+    (offset, votes), = step.most_common(1)
+    if votes < 3 or votes < 0.6 * sum(step.values()):
+        return
+    for i, p in pages.items():
+        m = PRINTED_RE.search(p.body)
+        if p.status == 'draft' and not p.number and m and str(i + offset) in m.group(1).split(', '):
+            write_page(page_path(workdir, i), 'draft', str(i + offset), PRINTED_RE.sub('', p.body, count=1))
+
+
 # -- progress ------------------------------------------------------------------
 
 def load_pages(workdir):
-    with open(os.path.join(workdir, 'job.json')) as f:
-        n = json.load(f)['pages']
+    n = _job(workdir)['pages']
     pages = []
     for i in range(1, n + 1):
         try:
@@ -503,12 +713,20 @@ def apply_fixes(workdir, i, corrections, number=None):
     once; if any doesn't, nothing is changed. ``number``: the printed page number, if it
     is to be set."""
     path = page_path(workdir, i)
+    if not os.path.exists(path):
+        raise SystemExit(f'There is no page {i} in {workdir}.')
     with open(path, encoding='utf-8') as f:
         text = f.read()
+    start = parse_page(text)
+    if start.status == 'todo' and not start.body:
+        raise SystemExit(f'{os.path.basename(path)} is empty: there is no draft to correct. Type the page '
+                         f'(or, for a blank page, nothing) and write the file with status: done.')
     errors, n = [], 0
     for line in corrections.splitlines():
         if not line.strip():
             continue
+        if line.rstrip().endswith(FIX_SEP.rstrip()) and not line.endswith(FIX_SEP):
+            line = line.rstrip() + ' '             # 'wrong text ==>' deletes it; the space after is often trimmed
         if FIX_SEP not in line:
             errors.append(f'no "{FIX_SEP.strip()}" in: {line}')
             continue
@@ -529,6 +747,7 @@ def apply_fixes(workdir, i, corrections, number=None):
 
 def pack(workdir, zip_path):
     """The page files in one small file, to upload in a later session (prepare --resume)."""
+    _job(workdir)
     names = sorted(n for n in os.listdir(workdir) if re.fullmatch(r'page_\d{4}\.md', n))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         for n in names:
